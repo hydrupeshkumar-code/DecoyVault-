@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+venv/
+
+# Checkpoints & large files
+ai/restormer/checkpoints/*.pt
+ai/cloud_detector/checkpoints/*.pt
+*.ckpt
+
+# Dataset raw files (large)
+datasets/sen2cr/cloudy/*.npy
+datasets/sen2cr/clear/*.npy
+datasets/sen2cr/masks/*.npy
+datasets/liss4/**/*.npy
+
+# Outputs
+outputs/uploads/
+outputs/predictions/
+outputs/reports/*.pdf
+
+# Node
+frontend/node_modules/
+frontend/build/
+
+# Docker
+docker/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

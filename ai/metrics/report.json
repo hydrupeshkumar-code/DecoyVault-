@@ -1,0 +1,14 @@
+{
+  "model": "Restormer-v2",
+  "dataset": "SEN2-CR",
+  "n_samples": 0,
+  "psnr_db": null,
+  "ssim": null,
+  "sam_rad": null,
+  "sam_deg": null,
+  "rmse": null,
+  "ndvi_mae_global": null,
+  "ndvi_mae_cloud": null,
+  "ndvi_improvement": null,
+  "note": "Run ai/metrics/compute.py to populate this file."
+}

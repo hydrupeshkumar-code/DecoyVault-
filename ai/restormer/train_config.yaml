@@ -1,0 +1,134 @@
+# ChaturVyuha CloudVision AI – Restormer Training Configuration
+# ============================================================
+# LISS-IV cloud removal via Restormer (Zamir et al., 2022)
+# Sensor: Resourcesat-2/2A LISS-IV | Bands: Green / Red / NIR
+
+# ---- Reproducibility ----
+seed: 42
+
+# ---- Data ----
+data:
+  # PRIMARY dataset: SEN12MS-CR (globally distributed, multi-season cloudy/clear pairs)
+  # See: Ebel et al. (2022) "SEN12MS-CR-TS", IEEE TGRS
+  # Alternatives: sen2cr (smaller), liss4 (real imagery, Phase 3 only)
+  dataset_type: "sen12ms_cr"
+  root_dir: "datasets/sen12ms_cr"
+  layout: "flat"           # 'flat' (cloudy/clear/masks/) or 'roi' (ROIs<id>_<season>/)
+  patch_size: 256
+  num_workers: 4
+  pin_memory: true
+
+  # Cloud fraction filters — CRITICAL for training quality.
+  # Samples below min have insufficient cloud for supervision.
+  # Samples above max have no clear reference signal remaining.
+  min_cloud_fraction: 0.02
+  max_cloud_fraction: 0.95
+
+  # Pair quality filtering (run ai/dataset_tools/pair_quality.py first)
+  # pair_quality_path: "datasets/sen12ms_cr/pair_quality.json"
+  # min_pair_quality: 0.5   # discard pairs with score below this
+
+# ---- Model ----
+model:
+  in_channels: 3          # Green, Red, NIR — NEVER RGB
+  out_channels: 3
+  dim: 48
+  num_blocks: [4, 6, 6, 8]
+  num_refinement_blocks: 4
+  heads: [1, 2, 4, 8]
+  ffn_expansion_factor: 2.66
+  bias: false
+
+residual_head:
+  # Disabled by default. The model's built-in global residual plus the
+  # inference-time cloud-mask blend (see tiled_inference.py) already guarantee
+  # that cloud-free pixels are preserved, so the separate residual head is
+  # redundant. It is also not yet persisted in checkpoints nor applied during
+  # inference — enabling it would cause a train/serve mismatch. Leave false
+  # until checkpoint persistence and inference wiring are added.
+  enabled: false
+  mid_channels: 32
+
+# ---- Loss ----
+# Weights tuned for spectral fidelity in satellite imagery.
+# SAM weight (0.5) is higher than typical restoration tasks because
+# spectral angle preservation is critical for downstream NDVI, NDWI etc.
+loss:
+  use_adversarial: false   # enabled in Phase 3 only
+  w_l1: 1.0
+  w_sam: 0.5
+  w_msssim: 0.3
+  w_gradient: 0.2
+  w_adversarial: 0.05
+
+# ---- Training Phases ----
+# Phase 1 – Warmup: build stable gradient flow at low LR
+phase1:
+  epochs: 20
+  lr: 1.0e-4
+  batch_size: 8
+  grad_clip: 0.5
+  ema_decay: 0.999
+
+# Phase 2 – Main Training: full LR schedule on SEN12MS-CR
+phase2:
+  epochs: 150
+  lr: 3.0e-4
+  batch_size: 8
+  grad_clip: 1.0
+  ema_decay: 0.9999
+
+# Phase 3 – LISS-IV Fine-Tuning:
+#   - Real Resourcesat-2 imagery (if available)
+#   - Domain-adapted SEN2-CR / SEN12MS-CR as fallback
+#   - Adversarial loss enabled for perceptual realism
+#   - Lower LR to avoid catastrophic forgetting
+phase3:
+  epochs: 50
+  lr: 5.0e-5
+  batch_size: 4
+  grad_clip: 0.5
+  ema_decay: 0.9999
+  use_adversarial: true
+  liss4_root: "datasets/liss4"
+  min_cloud_fraction: 0.05
+  max_cloud_fraction: 0.90
+
+# ---- Optimiser ----
+optimizer:
+  type: AdamW
+  betas: [0.9, 0.999]
+  weight_decay: 1.0e-4
+
+scheduler:
+  type: CosineAnnealingLR
+  T_max: 150        # overridden per phase
+  eta_min: 1.0e-6
+
+# ---- Mixed Precision ----
+amp:
+  enabled: true
+  dtype: float16    # bfloat16 recommended for A100/H100
+
+# ---- Checkpointing ----
+checkpointing:
+  checkpoint_dir: "ai/restormer/checkpoints"
+  save_every_n_epochs: 10
+  keep_last_n: 5
+  resume_from: null  # set path to resume
+
+# ---- Logging ----
+logging:
+  log_dir: "outputs/metrics"
+  log_every_n_steps: 50
+  val_every_n_epochs: 5
+  metrics_report: "outputs/metrics/report.json"
+  # Optional: MLflow tracking URI
+  # mlflow_uri: "mlruns"
+  # experiment_name: "cloudvision_restormer_v2"
+
+# ---- Tiled Inference ----
+tiled_inference:
+  tile_size: 256
+  overlap: 32
+  window: hann      # 'hann' or 'gaussian'

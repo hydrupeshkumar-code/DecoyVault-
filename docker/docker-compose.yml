@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    container_name: cloudvision_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../ai/restormer/checkpoints:/app/ai/restormer/checkpoints:ro
+      - ../ai/cloud_detector/checkpoints:/app/ai/cloud_detector/checkpoints:ro
+      - ../outputs:/app/outputs
+    environment:
+      - RESTORMER_CHECKPOINT=/app/ai/restormer/checkpoints/phase2_final.pt
+      - DETECTOR_CHECKPOINT=/app/ai/cloud_detector/checkpoints/best.pt
+      - ALLOWED_ORIGINS=http://localhost:3000,http://frontend:80
+      - OUTPUT_DIR=/app/outputs
+      - UPLOAD_DIR=/app/outputs/uploads
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        - REACT_APP_API_URL=http://localhost:8000
+    container_name: cloudvision_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  outputs:

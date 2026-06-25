@@ -1,0 +1,74 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base resets ─────────────────────────────────────────── */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Safe-area viewport height (iOS Safari address-bar fix) ── */
+@layer utilities {
+  .h-screen-safe {
+    height: 100vh;
+    height: 100dvh;
+  }
+}
+
+/* ── Hero animation classes ──────────────────────────────── */
+/* Keyframes live in tailwind.config.js — referenced here only via class names */
+
+.hero-zoom {
+  animation: heroZoom 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform;
+}
+
+.hero-anim {
+  animation-fill-mode: both;
+}
+
+.hero-reveal {
+  animation: heroReveal 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  opacity: 0;
+}
+
+.hero-fade {
+  animation: heroFadeUp 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  opacity: 0;
+}
+
+/* ── Reduced-motion overrides ────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .hero-zoom {
+    animation: none;
+    will-change: auto;
+    transform: none;
+  }
+
+  .hero-reveal {
+    animation: none;
+    opacity: 1;
+    clip-path: none;
+  }
+
+  .hero-fade {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Backdrop-filter fallback ────────────────────────────── */
+@supports not (backdrop-filter: blur(1px)) {
+  .backdrop-blur-md {
+    background-color: rgba(0, 0, 0, 0.6) !important;
+  }
+}
