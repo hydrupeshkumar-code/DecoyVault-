@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
 
 import yaml
 
@@ -137,10 +137,20 @@ def load_checkpoint(
 class Trainer:
     """End-to-end Restormer trainer."""
 
-    def __init__(self, cfg: Dict[str, Any], resume_path: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        cfg: Dict[str, Any],
+        resume_path: Optional[str] = None,
+        max_samples: Optional[int] = None,
+        smoke: bool = False,
+    ) -> None:
         self.cfg = cfg
+        self.max_samples = max_samples
+        self.smoke = smoke
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         log.info("Using device: %s", self.device)
+        if smoke:
+            log.info("SMOKE MODE: tiny subset, few epochs, Phase 1 only — sanity check, not a real run.")
 
         seed = cfg.get("seed", 42)
         random.seed(seed)
@@ -210,6 +220,18 @@ class Trainer:
                 patch_size=dcfg["patch_size"],
                 augment=True,
             )
+
+        # Optional cap (smoke runs / quick experiments).
+        if self.max_samples and len(full_ds) > self.max_samples:
+            full_ds = Subset(full_ds, list(range(self.max_samples)))
+            log.info("Capped dataset to %d samples (--max-samples).", self.max_samples)
+
+        if len(full_ds) < 2:
+            raise RuntimeError(
+                f"Need at least 2 samples to train, found {len(full_ds)}. "
+                "Check root_dir / run ai.dataset_tools.prepare_dataset first."
+            )
+
         val_size = max(1, int(len(full_ds) * 0.1))
         train_size = len(full_ds) - val_size
         train_ds, val_ds = random_split(full_ds, [train_size, val_size])
@@ -448,6 +470,11 @@ class Trainer:
 
     def run(self) -> None:
         self._run_phase(1, self.cfg["phase1"])
+
+        if self.smoke:
+            log.info("SMOKE MODE complete — Phase 1 ran end-to-end. Skipping Phases 2/3.")
+            return
+
         self._run_phase(2, self.cfg["phase2"])
 
         # Phase 3: fine-tune on real LISS-IV data
@@ -482,14 +509,38 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Restormer for cloud removal")
     parser.add_argument("--config", default="ai/restormer/train_config.yaml")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="Cap the dataset to the first N samples (quick experiments).")
+    parser.add_argument("--smoke", action="store_true",
+                        help="Sanity run: tiny subset, few epochs, Phase 1 only, AMP off. "
+                             "Confirms the loss descends and nothing NaNs before a full run.")
     return parser.parse_args()
+
+
+def _apply_smoke_overrides(cfg: Dict[str, Any]) -> None:
+    """Shrink a config in-place for a fast CPU/GPU sanity run."""
+    cfg.setdefault("phase1", {})
+    cfg["phase1"]["epochs"] = 2
+    cfg["phase1"]["batch_size"] = 2
+    cfg.setdefault("amp", {})["enabled"] = False          # AMP/GradScaler is CUDA-only
+    cfg.setdefault("data", {})["num_workers"] = 0          # deterministic, no worker overhead
+    cfg.setdefault("logging", {})["val_every_n_epochs"] = 1
+    cfg.setdefault("logging", {})["log_every_n_steps"] = 1
+    cfg.setdefault("checkpointing", {})["save_every_n_epochs"] = 1
 
 
 def main() -> None:
     args = _parse_args()
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    trainer = Trainer(cfg, resume_path=args.resume)
+
+    max_samples = args.max_samples
+    if args.smoke:
+        _apply_smoke_overrides(cfg)
+        if max_samples is None:
+            max_samples = 64
+
+    trainer = Trainer(cfg, resume_path=args.resume, max_samples=max_samples, smoke=args.smoke)
     trainer.run()
 
 

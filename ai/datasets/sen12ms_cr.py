@@ -201,10 +201,16 @@ class SEN12MSCRDataset(CloudRemovalDataset):
         """
         arr, _ = load_any(path, normalize=False)  # [C, H, W] float32
 
-        # S2 L1C DN → TOA reflectance
+        # Already-prepared 3-band reflectance patch (e.g. produced by
+        # ai/dataset_tools/prepare_dataset.py): values are in [0,1] and bands
+        # are already Green/Red/NIR. Re-dividing by the S2 DN scale would crush
+        # it to ~0, so detect and pass it through untouched.
+        if arr.shape[0] == 3 and float(np.nanmax(arr)) <= 1.5:
+            return np.clip(np.nan_to_num(arr, nan=0.0), 0.0, 1.0).astype(np.float32)
+
+        # Raw Sentinel-2: DN → TOA reflectance, then select LISS-IV bands.
         arr = arr / self._s2_scale
 
-        # Band selection
         if arr.shape[0] >= max(self._band_indices) + 1:
             arr = arr[self._band_indices]
         elif arr.shape[0] == 3:
