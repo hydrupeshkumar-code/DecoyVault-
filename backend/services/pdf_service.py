@@ -60,13 +60,24 @@ def generate_pdf_report(
     Returns:
         Absolute path to the generated PDF.
     """
+    # Scientific verdict (Excellent / Acceptable / Needs Improvement) derived
+    # from the metric suite. Computed up-front so both the PDF and the JSON
+    # fallback carry it.
+    verdict: Optional[dict] = None
+    if metrics:
+        try:
+            from ai.validation.scientific_summary import summarize
+            verdict = summarize(metrics).to_dict()
+        except Exception:
+            verdict = None
+
     available, libs = _try_import_reportlab()
     if not available:
         # Fallback: write a plain JSON report
         json_path = str(output_path).replace(".pdf", ".json")
         Path(json_path).parent.mkdir(parents=True, exist_ok=True)
         with open(json_path, "w") as f:
-            json.dump({"scene_id": scene_id, "metrics": metrics}, f, indent=2)
+            json.dump({"scene_id": scene_id, "metrics": metrics, "verdict": verdict}, f, indent=2)
         return json_path
 
     (colors, A4, getSampleStyleSheet, cm, RLImage, Paragraph,
@@ -88,6 +99,18 @@ def generate_pdf_report(
     story.append(Paragraph(f"Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", styles["Normal"]))
     story.append(Paragraph("Sensor: LISS-IV (Resourcesat-2)", styles["Normal"]))
     story.append(Spacer(1, 0.5 * cm))
+
+    # Scientific verdict
+    if verdict is not None:
+        story.append(Paragraph("Scientific Verdict", styles["Heading2"]))
+        story.append(Paragraph(
+            f"<b>{verdict['verdict']}</b> &nbsp; (score {verdict['score']:.2f})",
+            styles["Normal"],
+        ))
+        story.append(Paragraph(verdict.get("headline", ""), styles["Normal"]))
+        for note in verdict.get("notes", []):
+            story.append(Paragraph(f"• {note}", styles["Normal"]))
+        story.append(Spacer(1, 0.5 * cm))
 
     # Metrics table
     story.append(Paragraph("Quality Metrics", styles["Heading2"]))

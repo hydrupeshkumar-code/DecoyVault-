@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.config.settings import settings
 from backend.schemas.reconstruct_schema import ReconstructRequest, ReconstructResponse
+from backend.services.file_resolver import resolve_npy
 from backend.services.restormer_service import reconstruct
 
 router = APIRouter(prefix="/reconstruct", tags=["reconstruct"])
@@ -40,9 +41,9 @@ async def run_reconstruction(request: ReconstructRequest) -> ReconstructResponse
     """
     upload_dir = Path(settings.UPLOAD_DIR)
 
-    # ── Load image ────────────────────────────────────────────────────
-    npy_path = upload_dir / f"{request.file_id}.npy"
-    if not npy_path.exists():
+    # ── Load image (real upload or bundled demo scene) ────────────────
+    npy_path = resolve_npy(request.file_id, "cloudy")
+    if npy_path is None:
         raise HTTPException(
             status_code=404,
             detail=f"File ID '{request.file_id}' not found. Upload the image first via /upload.",
@@ -58,8 +59,8 @@ async def run_reconstruction(request: ReconstructRequest) -> ReconstructResponse
     # ── Load cloud mask (optional) ────────────────────────────────────
     cloud_mask: Optional[np.ndarray] = None
     if request.mask_id:
-        mask_path = Path(settings.OUTPUT_DIR) / "predictions" / f"{request.mask_id}_mask.npy"
-        if not mask_path.exists():
+        mask_path = resolve_npy(request.mask_id, "mask")
+        if mask_path is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Mask ID '{request.mask_id}' not found. Run /detect first.",
@@ -103,6 +104,7 @@ async def run_reconstruction(request: ReconstructRequest) -> ReconstructResponse
         result_id=result_id,
         elapsed_s=float(result["elapsed_s"]),
         tiff_saved=tiff_saved,
+        fallback=bool(result.get("fallback", False)),
     )
 
 

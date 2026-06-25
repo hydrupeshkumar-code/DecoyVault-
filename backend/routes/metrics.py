@@ -12,15 +12,13 @@ remote sensing applications.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import torch
 from fastapi import APIRouter, HTTPException
 
-from backend.config.settings import settings
 from backend.schemas.metrics_schema import MetricsRequest, MetricsResponse
+from backend.services.file_resolver import resolve_npy
 from backend.services.metrics_service import compute_image_metrics
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -41,12 +39,12 @@ async def compute_metrics_route(request: MetricsRequest) -> MetricsResponse:
 
     Returns comprehensive per-region metrics suitable for scientific review.
     """
-    pred_path   = Path(settings.OUTPUT_DIR) / "predictions" / f"{request.pred_id}.npy"
-    target_path = Path(settings.UPLOAD_DIR) / f"{request.target_id}.npy"
+    pred_path   = resolve_npy(request.pred_id, "pred")
+    target_path = resolve_npy(request.target_id, "clear")
 
-    if not pred_path.exists():
+    if pred_path is None:
         raise HTTPException(status_code=404, detail=f"Prediction '{request.pred_id}' not found.")
-    if not target_path.exists():
+    if target_path is None:
         raise HTTPException(status_code=404, detail=f"Target '{request.target_id}' not found.")
 
     pred   = np.load(str(pred_path)).astype(np.float32)
@@ -64,14 +62,14 @@ async def compute_metrics_route(request: MetricsRequest) -> MetricsResponse:
 
     cloudy: Optional[np.ndarray] = None
     if request.cloudy_id:
-        cloudy_path = Path(settings.UPLOAD_DIR) / f"{request.cloudy_id}.npy"
-        if cloudy_path.exists():
+        cloudy_path = resolve_npy(request.cloudy_id, "cloudy")
+        if cloudy_path is not None:
             cloudy = _ensure_chw(np.load(str(cloudy_path)).astype(np.float32))
 
     mask: Optional[np.ndarray] = None
     if request.mask_id:
-        mask_path = Path(settings.OUTPUT_DIR) / "predictions" / f"{request.mask_id}_mask.npy"
-        if mask_path.exists():
+        mask_path = resolve_npy(request.mask_id, "mask")
+        if mask_path is not None:
             mask = np.load(str(mask_path)).astype(np.float32)
             if mask.ndim == 2:
                 mask = mask[np.newaxis, np.newaxis]   # [1,1,H,W]

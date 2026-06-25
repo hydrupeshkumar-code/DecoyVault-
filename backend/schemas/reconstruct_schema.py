@@ -18,4 +18,5 @@ class ReconstructResponse(BaseModel):
     result_id: str    = Field(..., description="UUID of the saved reconstruction")
     elapsed_s: float  = Field(..., description="Inference time in seconds")
     tiff_saved: bool  = Field(False, description="True if a GeoTIFF was saved alongside .npy")
+    fallback: bool    = Field(False, description="True if the checkpoint-free clear-region-mean fallback was used (no trained model)")
     message: str      = "Reconstruction complete"

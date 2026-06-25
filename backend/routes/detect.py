@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from backend.config.settings import settings
 from backend.schemas.detect_schema import DetectRequest, DetectResponse
 from backend.services.cloud_detector_service import detect_clouds
+from backend.services.file_resolver import resolve_npy
 
 router = APIRouter(prefix="/detect", tags=["detect"])
 
@@ -18,13 +19,13 @@ router = APIRouter(prefix="/detect", tags=["detect"])
 @router.post("/", response_model=DetectResponse)
 async def detect(request: DetectRequest) -> DetectResponse:
     """
-    Run cloud detection on a previously uploaded image.
+    Run cloud detection on a previously uploaded image (or a ``demo_<scene>``).
 
     Returns the cloud fraction and a ``mask_id`` pointing to the saved
     binary cloud mask.
     """
-    img_path = Path(settings.UPLOAD_DIR) / f"{request.file_id}.npy"
-    if not img_path.exists():
+    img_path = resolve_npy(request.file_id, "cloudy")
+    if img_path is None:
         raise HTTPException(status_code=404, detail=f"File ID '{request.file_id}' not found.")
 
     image = np.load(str(img_path)).astype(np.float32)

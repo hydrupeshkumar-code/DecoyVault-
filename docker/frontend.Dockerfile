@@ -5,8 +5,11 @@ COPY frontend/package.json ./
 RUN npm install
 
 COPY frontend/ ./
-ARG REACT_APP_API_URL=http://localhost:8000
-ENV REACT_APP_API_URL=$REACT_APP_API_URL
+# Vite only exposes env vars prefixed with VITE_ to the client bundle.
+# REACT_APP_* (CRA convention) is silently ignored, which previously left the
+# frontend pointing at the wrong API origin.
+ARG VITE_API_URL=http://localhost:8000
+ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
 # Production stage – serve via nginx

@@ -31,7 +31,7 @@ services:
       context: ..
       dockerfile: docker/frontend.Dockerfile
       args:
-        - REACT_APP_API_URL=http://localhost:8000
+        - VITE_API_URL=http://localhost:8000
     container_name: cloudvision_frontend
     ports:
       - "3000:80"

@@ -27,6 +27,7 @@ outputs/reports/*.pdf
 # Node
 frontend/node_modules/
 frontend/build/
+frontend/dist/
 
 # Docker
 docker/.env

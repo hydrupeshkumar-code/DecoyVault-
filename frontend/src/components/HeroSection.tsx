@@ -119,6 +119,9 @@ export default function HeroSection() {
 
             <button
               type="button"
+              onClick={() =>
+                document.getElementById("pipeline")?.scrollIntoView({ behavior: "smooth" })
+              }
               className="pointer-events-auto bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium px-7 py-3 rounded-full transition-all hover:scale-[1.03] active:scale-95 hover:shadow-lg hover:shadow-orange-500/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-400"
             >
               Explore Reconstruction

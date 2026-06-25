@@ -17,6 +17,10 @@ RUN pip install --no-cache-dir -r ai/requirements.txt -r backend/requirements.tx
 COPY ai/ /app/ai/
 COPY backend/ /app/backend/
 
+# Bundled synthetic demo scenes so `demo_<scene>` file IDs resolve in-container
+# (see backend/services/file_resolver.py).
+COPY datasets/demo/ /app/datasets/demo/
+
 ENV PYTHONPATH="/app"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

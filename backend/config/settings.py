@@ -24,6 +24,10 @@ class Settings:
     )
     OUTPUT_DIR: str = os.getenv("OUTPUT_DIR", "outputs")
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "outputs/uploads")
+    # Bundled synthetic demo scenes (agriculture / urban / water).
+    # Resolved for file IDs of the form ``demo_<scene>`` so the pipeline can be
+    # exercised end-to-end without uploading data — see services/file_resolver.py.
+    DEMO_DIR: str = os.getenv("DEMO_DIR", "datasets/demo")
 
     # Inference parameters
     TILE_SIZE: int = int(os.getenv("TILE_SIZE", "256"))
