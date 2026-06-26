@@ -563,14 +563,20 @@ class Trainer:
         # Phase 3: fine-tune on real LISS-IV data
         p3 = self.cfg.get("phase3", {})
         if p3.get("liss4_root") and Path(p3["liss4_root"]).exists():
-            liss4_ds = LISS4Dataset(
-                root_dir=p3["liss4_root"],
-                split="train",
-                patch_size=self.cfg["data"]["patch_size"],
-                augment=True,
-                min_cloud_fraction=p3.get("min_cloud_fraction", 0.02),
-                max_cloud_fraction=p3.get("max_cloud_fraction", 0.95),
-            )
+            try:
+                liss4_ds = LISS4Dataset(
+                    root_dir=p3["liss4_root"],
+                    split="train",
+                    patch_size=self.cfg["data"]["patch_size"],
+                    augment=True,
+                    min_cloud_fraction=p3.get("min_cloud_fraction", 0.02),
+                    max_cloud_fraction=p3.get("max_cloud_fraction", 0.95),
+                )
+            except RuntimeError as e:
+                log.warning("Phase 3 skipped — LISS-IV dataset error: %s", e)
+                log.info("Download LISS-IV scenes from bhoonidhi.nrsc.gov.in and place "
+                         "prepared pairs in %s, then re-run to fine-tune.", p3["liss4_root"])
+                return
             self.train_loader = DataLoader(
                 liss4_ds,
                 batch_size=p3["batch_size"],
