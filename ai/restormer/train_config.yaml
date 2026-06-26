@@ -12,11 +12,11 @@ data:
   # See: Ebel et al. (2022) "SEN12MS-CR-TS", IEEE TGRS
   # Alternatives: sen2cr (smaller), liss4 (real imagery, Phase 3 only)
   dataset_type: "sen12ms_cr"
-  root_dir: "datasets/sen12ms_cr"
+  root_dir: "datasets/rice2_prepared"   # smoke: rice2_prepared  |  full: sen12ms_cr
   layout: "flat"           # 'flat' (cloudy/clear/masks/) or 'roi' (ROIs<id>_<season>/)
   patch_size: 256
-  num_workers: 4
-  pin_memory: true
+  num_workers: 0           # 0 = main process only (required on Windows; safe on Linux too)
+  pin_memory: false        # false when num_workers=0 or on CPU
 
   # Cloud fraction filters — CRITICAL for training quality.
   # Samples below min have insufficient cloud for supervision.
