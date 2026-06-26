@@ -66,7 +66,7 @@ loss:
 phase1:
   epochs: 20
   lr: 1.0e-4
-  batch_size: 4    # 4 is safe for 8 GB VRAM; try 8 if no OOM after epoch 1
+  batch_size: 2    # laptop 4060 shares VRAM with display; 2 is the safe limit
   grad_clip: 0.5
   ema_decay: 0.999
 
@@ -74,7 +74,7 @@ phase1:
 phase2:
   epochs: 150
   lr: 3.0e-4
-  batch_size: 4    # match phase1; raise to 8 once confirmed stable
+  batch_size: 2
   grad_clip: 1.0
   ema_decay: 0.9999
 
