@@ -40,9 +40,17 @@ class SAMLoss(nn.Module):
             Scalar SAM loss.
         """
         dot = (pred * target).sum(dim=1)                  # [B, H, W]
-        norm_pred = pred.norm(dim=1).clamp(min=self.eps)
-        norm_tgt = target.norm(dim=1).clamp(min=self.eps)
-        cos_angle = (dot / (norm_pred * norm_tgt)).clamp(-1 + self.eps, 1 - self.eps)
+        # CRITICAL: compute the norm as sqrt(sum_of_squares + eps), NOT as
+        # tensor.norm().clamp(min=eps). torch.norm has a 0/0 NaN *gradient* at
+        # all-zero (black) pixels — clamping the forward OUTPUT does not fix the
+        # backward pass. Putting eps INSIDE the sqrt makes the gradient finite
+        # everywhere. Black pixels are common in real data (image borders,
+        # nodata fill), so this is the difference between training and NaN.
+        norm_pred = torch.sqrt((pred * pred).sum(dim=1) + self.eps)
+        norm_tgt = torch.sqrt((target * target).sum(dim=1) + self.eps)
+        # Keep cos strictly inside (-1, 1): acos has infinite gradient at the
+        # endpoints. A 1e-6 margin caps the gradient at ~1/sqrt(2e-6) ≈ 700.
+        cos_angle = (dot / (norm_pred * norm_tgt)).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
         angle = torch.acos(cos_angle)                     # [B, H, W]
         return angle.mean()
 

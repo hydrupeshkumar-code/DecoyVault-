@@ -25,7 +25,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Subset, random_split
@@ -289,7 +289,7 @@ class Trainer:
             T_max=phase_cfg["epochs"],
             eta_min=self.cfg["scheduler"]["eta_min"],
         )
-        scaler = GradScaler(enabled=self.cfg["amp"]["enabled"])
+        scaler = GradScaler(self.device.type, enabled=self.cfg["amp"]["enabled"])
         ema = EMA(self.model, decay=phase_cfg["ema_decay"])
 
         if self.resume_path and phase_id == 1 and start_epoch > 0:
@@ -330,7 +330,7 @@ class Trainer:
                 clear = batch["clear"].to(self.device, non_blocking=True)
                 mask = batch["mask"].to(self.device, non_blocking=True)
 
-                with autocast(enabled=self.cfg["amp"]["enabled"]):
+                with autocast(self.device.type, enabled=self.cfg["amp"]["enabled"]):
                     if self.res_head is not None:
                         # Residual-head path: feed the *decoder feature map*
                         # (dim channels), NOT the 3-channel reconstruction, to
@@ -348,10 +348,24 @@ class Trainer:
                 optimizer.zero_grad()
                 scaler.scale(losses["total"]).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(params, phase_cfg["grad_clip"])
-                scaler.step(optimizer)
-                scaler.update()
-                ema.update(self.model)
+                # clip_grad_norm_ returns the total norm BEFORE clipping; if any
+                # gradient is NaN/Inf the returned norm is non-finite. Under AMP
+                # GradScaler skips such steps automatically, but smoke/CPU runs
+                # have AMP off — so guard explicitly. A single bad batch must not
+                # corrupt the weights and turn every subsequent forward to NaN.
+                grad_norm = torch.nn.utils.clip_grad_norm_(params, phase_cfg["grad_clip"])
+                if torch.isfinite(grad_norm):
+                    scaler.step(optimizer)
+                    scaler.update()
+                    ema.update(self.model)
+                else:
+                    scaler.update()  # keep AMP scale state consistent
+                    optimizer.zero_grad(set_to_none=True)
+                    log.warning(
+                        "Phase %d | Epoch %d | Step %d | non-finite gradient — step skipped",
+                        phase_id, epoch + 1, step,
+                    )
+                    continue
 
                 # Discriminator update
                 if use_adv and discriminator is not None and disc_optim is not None:
@@ -385,7 +399,7 @@ class Trainer:
                                 tb_writer.add_scalar(f"train/loss_{k}", v.item(), global_step)
 
             scheduler.step()
-            mean_loss = sum(epoch_losses) / len(epoch_losses)
+            mean_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
             current_lr = optimizer.param_groups[0]["lr"]
             log.info(
                 "Phase %d | Epoch %d | Mean Loss %.4f | LR %.2e",
