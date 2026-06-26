@@ -55,7 +55,7 @@ async def generate_report(request: ReportRequest) -> ReportResponse:
         if tgt_path is not None:
             target_raw = np.load(str(tgt_path)).astype(np.float32)
             target = target_raw.transpose(1, 2, 0) if target_raw.shape[0] <= 13 else target_raw
-            metrics = compute_image_metrics(pred, target, mask=cloud_mask)
+            metrics = compute_image_metrics(pred, target, cloudy=cloudy_img, mask=cloud_mask)
 
     report_path = (
         Path(settings.OUTPUT_DIR)

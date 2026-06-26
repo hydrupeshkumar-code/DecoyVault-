@@ -98,12 +98,12 @@ def cloud_region_metrics(
     t_px  = target.permute(0, 2, 3, 1)[m2d]  # [N, C]
 
     dot      = (p_px * t_px).sum(dim=1)
-    norm_p   = p_px.norm(dim=1).clamp(min=eps)
-    norm_t   = t_px.norm(dim=1).clamp(min=eps)
+    norm_p   = torch.sqrt((p_px * p_px).sum(dim=1) + eps)
+    norm_t   = torch.sqrt((t_px * t_px).sum(dim=1) + eps)
     cos_a    = (dot / (norm_p * norm_t)).clamp(-1 + eps, 1 - eps)
     sam_rad  = float(torch.acos(cos_a).mean())
 
-    n_pixels = int(m2d.sum().item()) * C
+    n_pixels = int(m2d.sum().item())
 
     return {
         "cloud_psnr_db":     psnr_val,
@@ -267,8 +267,8 @@ def edge_preservation_score(
     p_px = pred.permute(0, 2, 3, 1)[bm]
     t_px = target.permute(0, 2, 3, 1)[bm]
     dot   = (p_px * t_px).sum(dim=1)
-    n_p   = p_px.norm(dim=1).clamp(min=eps)
-    n_t   = t_px.norm(dim=1).clamp(min=eps)
+    n_p   = torch.sqrt((p_px * p_px).sum(dim=1) + eps)
+    n_t   = torch.sqrt((t_px * t_px).sum(dim=1) + eps)
     sam   = float(torch.acos((dot / (n_p * n_t)).clamp(-1 + eps, 1 - eps)).mean())
 
     return {"edge_psnr_db": psnr, "boundary_sam_rad": sam}
