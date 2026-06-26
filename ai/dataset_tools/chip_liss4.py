@@ -48,6 +48,10 @@ log = logging.getLogger(__name__)
 
 _TIFF_EXTS = {".tif", ".tiff", ".TIF", ".TIFF"}
 
+# Bhoonidhi LISS-IV delivers bands as separate files inside a scene folder.
+# Band mapping: BAND2=Green, BAND3=Red, BAND4=NIR (matches our G/R/NIR convention).
+_LISS4_BAND_FILES = ["BAND2", "BAND3", "BAND4"]
+
 
 # ---------------------------------------------------------------------------
 # I/O helpers
@@ -60,8 +64,61 @@ def _read_tiff(path: Path) -> np.ndarray:
     return arr.astype(np.float32)
 
 
-def _discover_tiffs(root: Path) -> list[Path]:
-    return sorted(p for p in root.iterdir() if p.suffix.lower() in _TIFF_EXTS and p.is_file())
+def _is_liss4_scene_dir(d: Path) -> bool:
+    """True if directory contains Bhoonidhi-style BAND2/BAND3/BAND4 files."""
+    if not d.is_dir():
+        return False
+    for band in _LISS4_BAND_FILES:
+        if not any((d / f"{band}{ext}").exists() for ext in _TIFF_EXTS):
+            return False
+    return True
+
+
+def _read_liss4_scene_dir(d: Path) -> np.ndarray:
+    """
+    Stack Bhoonidhi BAND2/BAND3/BAND4 single-band TIFFs into [3, H, W] float32.
+    Band order: Green (BAND2), Red (BAND3), NIR (BAND4).
+    """
+    bands = []
+    for band_name in _LISS4_BAND_FILES:
+        band_path = None
+        for ext in _TIFF_EXTS:
+            p = d / f"{band_name}{ext}"
+            if p.exists():
+                band_path = p
+                break
+        if band_path is None:
+            raise FileNotFoundError(f"{band_name} not found in {d}")
+        arr = _read_tiff(band_path)
+        # Each band file is [1, H, W] or [H, W]
+        if arr.ndim == 2:
+            arr = arr[np.newaxis]
+        elif arr.shape[0] != 1:
+            arr = arr[0:1]
+        bands.append(arr)
+    return np.concatenate(bands, axis=0).astype(np.float32)  # [3, H, W]
+
+
+def _discover_scenes(root: Path) -> list[tuple[str, Path]]:
+    """
+    Return (stem, source) pairs from root, supporting two layouts:
+      1. Bhoonidhi: root/SceneFolder/{BAND2,BAND3,BAND4}.tif  (subdirs)
+      2. Classic:   root/scene.tif                             (flat TIFFs)
+    """
+    scenes: list[tuple[str, Path]] = []
+    for child in sorted(root.iterdir()):
+        if _is_liss4_scene_dir(child):
+            scenes.append((child.name, child))
+        elif child.is_file() and child.suffix.lower() in _TIFF_EXTS:
+            scenes.append((child.stem, child))
+    return scenes
+
+
+def _read_scene(source: Path) -> np.ndarray:
+    """Load a scene (dir or file) as [3, H, W] float32."""
+    if source.is_dir():
+        return _read_liss4_scene_dir(source)
+    return _read_tiff(source)
 
 
 def _find_match(stem: str, directory: Path) -> Optional[Path]:
@@ -185,9 +242,16 @@ def chip_scenes(
     min_cloud: float = 0.02,
     max_cloud: float = 0.95,
 ) -> dict:
-    cloudy_files = _discover_tiffs(cloudy_dir)
-    if not cloudy_files:
-        raise RuntimeError(f"No GeoTIFFs found in {cloudy_dir}")
+    cloudy_scenes = _discover_scenes(cloudy_dir)
+    if not cloudy_scenes:
+        raise RuntimeError(
+            f"No scenes found in {cloudy_dir}. "
+            "Expected either subdirs with BAND2/BAND3/BAND4.tif (Bhoonidhi format) "
+            "or flat .tif files."
+        )
+
+    # Build a lookup for clear scenes by stem
+    clear_scenes = {stem: src for stem, src in _discover_scenes(clear_dir)}
 
     out_cloudy = output / "cloudy"
     out_clear  = output / "clear"
@@ -200,21 +264,24 @@ def chip_scenes(
     skipped_cloud = 0
     scenes_processed = 0
 
-    for scene_path in cloudy_files:
-        stem = scene_path.stem
-        clear_path = _find_match(stem, clear_dir)
-        if clear_path is None:
-            log.warning("No clear match for %s — skipping.", stem)
+    for stem, cloudy_source in cloudy_scenes:
+        # Match clear scene by stem; for Bhoonidhi dirs the stems are the long
+        # scene-folder names, so they must match exactly between cloudy/ and clear/.
+        clear_source = clear_scenes.get(stem)
+        if clear_source is None:
+            log.warning("No clear match for '%s' — skipping.", stem)
             continue
 
         log.info("Processing scene: %s", stem)
         try:
-            cloudy_raw = _read_tiff(scene_path)
-            clear_raw  = _read_tiff(clear_path)
+            cloudy_raw = _read_scene(cloudy_source)
+            clear_raw  = _read_scene(clear_source)
         except Exception as e:
             log.warning("Failed to read %s: %s", stem, e)
             continue
 
+        # Bhoonidhi scenes already arrive in G/R/NIR order (BAND2/3/4);
+        # only apply band selection for flat multi-band TIFFs.
         try:
             cloudy_3 = _select_bands(cloudy_raw, bands)
             clear_3  = _select_bands(clear_raw, bands)
@@ -262,7 +329,8 @@ def chip_scenes(
                 skipped_cloud += 1
                 continue
 
-            chip_name = f"{stem}_chip{total_chips + 1:06d}"
+            safe_stem = stem[:40].replace(" ", "_")
+            chip_name = f"{safe_stem}_chip{total_chips + 1:06d}"
             np.save(out_cloudy / f"{chip_name}.npy", cl_chip.transpose(1, 2, 0))
             np.save(out_clear  / f"{chip_name}.npy", cr_chip.transpose(1, 2, 0))
             np.save(out_masks  / f"{chip_name}.npy", mk_2d)
