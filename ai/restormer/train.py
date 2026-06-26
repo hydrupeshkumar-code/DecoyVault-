@@ -289,7 +289,13 @@ class Trainer:
             T_max=phase_cfg["epochs"],
             eta_min=self.cfg["scheduler"]["eta_min"],
         )
-        scaler = GradScaler(self.device.type, enabled=self.cfg["amp"]["enabled"])
+        amp_enabled = self.cfg["amp"]["enabled"]
+        amp_dtype_str = self.cfg["amp"].get("dtype", "float16")
+        amp_dtype = torch.bfloat16 if amp_dtype_str == "bfloat16" else torch.float16
+        # GradScaler is only meaningful for float16 (which can overflow to Inf).
+        # bfloat16 has float32's exponent range — no overflow, no scaling needed.
+        use_scaler = amp_enabled and amp_dtype == torch.float16
+        scaler = GradScaler(self.device.type, enabled=use_scaler)
         ema = EMA(self.model, decay=phase_cfg["ema_decay"])
 
         if self.resume_path and phase_id == 1 and start_epoch > 0:
@@ -330,7 +336,7 @@ class Trainer:
                 clear = batch["clear"].to(self.device, non_blocking=True)
                 mask = batch["mask"].to(self.device, non_blocking=True)
 
-                with autocast(self.device.type, enabled=self.cfg["amp"]["enabled"]):
+                with autocast(self.device.type, enabled=amp_enabled, dtype=amp_dtype):
                     if self.res_head is not None:
                         # Residual-head path: feed the *decoder feature map*
                         # (dim channels), NOT the 3-channel reconstruction, to

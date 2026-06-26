@@ -108,7 +108,7 @@ scheduler:
 # ---- Mixed Precision ----
 amp:
   enabled: true
-  dtype: float16    # bfloat16 recommended for A100/H100
+  dtype: bfloat16   # bfloat16: float32 exponent range (no overflow), Tensor Cores on RTX 30/40
 
 # ---- Checkpointing ----
 checkpointing:

@@ -303,6 +303,14 @@ class CloudRemovalLoss(nn.Module):
             Dictionary with keys 'total', 'l1', 'sam', 'ms_ssim', 'gradient',
             and optionally 'adversarial'.
         """
+        # Cast to float32 before loss computation. float16 has a minimum positive
+        # value of ~6e-8, so the 1e-8 clamp in MS-SSIM and the 1e-6 clamp in the
+        # ms_ssim weighted product both silently underflow to 0.0, producing 0/0 = NaN
+        # on the very first step under AMP. Explicit float32 cast overrides autocast
+        # for these ops while the model forward pass still runs in float16/bfloat16.
+        pred = pred.float()
+        target = target.float()
+
         l1 = F.l1_loss(pred, target)
         sam = self.sam_loss(pred, target)
         ms_ssim = self.msssim_loss(pred, target)
