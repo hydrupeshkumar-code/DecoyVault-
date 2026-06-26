@@ -14,7 +14,7 @@ data:
   dataset_type: "sen12ms_cr"
   root_dir: "datasets/sen12ms_cr"
   layout: "flat"           # 'flat' (cloudy/clear/masks/) or 'roi' (ROIs<id>_<season>/)
-  patch_size: 256
+  patch_size: 128
   num_workers: 0           # 0 = main process only (required on Windows; safe on Linux too)
   pin_memory: false        # false when num_workers=0
 
@@ -64,7 +64,7 @@ loss:
 # ---- Training Phases ----
 # Phase 1 – Warmup: build stable gradient flow at low LR
 phase1:
-  epochs: 20
+  epochs: 10       # warmup; 8 h at patch_size=128 on RTX 4060
   lr: 1.0e-4
   batch_size: 2    # laptop 4060 shares VRAM with display; 2 is the safe limit
   grad_clip: 0.5
@@ -72,7 +72,7 @@ phase1:
 
 # Phase 2 – Main Training: full LR schedule on SEN12MS-CR
 phase2:
-  epochs: 150
+  epochs: 30       # hackathon target: 25 h; raise to 150 for production
   lr: 3.0e-4
   batch_size: 2
   grad_clip: 1.0
@@ -129,6 +129,6 @@ logging:
 
 # ---- Tiled Inference ----
 tiled_inference:
-  tile_size: 256
-  overlap: 32
+  tile_size: 128
+  overlap: 16
   window: hann      # 'hann' or 'gaussian'
