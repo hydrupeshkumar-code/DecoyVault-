@@ -387,7 +387,7 @@ class Trainer:
                         pred = self.res_head(feats, cloudy_input=cloudy, cloud_mask=mask)
                     else:
                         pred = self.model(cloudy)
-                    losses = criterion(pred, clear, discriminator)
+                    losses = criterion(pred, clear, discriminator, cloudy)
 
                 optimizer.zero_grad()
                 scaler.scale(losses["total"]).backward()

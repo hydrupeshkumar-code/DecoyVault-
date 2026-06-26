@@ -304,12 +304,14 @@ class CloudRemovalLoss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         discriminator: nn.Module | None = None,
+        cloudy: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Args:
             pred:          [B, 3, H, W] model output.
             target:        [B, 3, H, W] ground-truth clear image.
             discriminator: Optional PatchDiscriminator (required if use_adversarial).
+            cloudy:        [B, 3, H, W] cloudy input (required for conditional adversarial loss).
 
         Returns:
             Dictionary with keys 'total', 'l1', 'sam', 'ms_ssim', 'gradient',
@@ -343,7 +345,12 @@ class CloudRemovalLoss(nn.Module):
         }
 
         if self.use_adversarial and discriminator is not None:
-            adv = self.adv_loss(discriminator, pred)
+            # Conditional discriminator expects cat([condition, generated], dim=1).
+            if cloudy is not None:
+                gen_input = torch.cat([cloudy.float(), pred], dim=1)
+            else:
+                gen_input = pred
+            adv = self.adv_loss(discriminator, gen_input)
             total = total + self.w_adv * adv
             losses["adversarial"] = adv
 
