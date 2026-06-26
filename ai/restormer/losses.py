@@ -85,13 +85,24 @@ def _ssim(
     mu_y2 = mu_y * mu_y
     mu_xy = mu_x * mu_y
 
-    sigma_x2 = F.conv2d(pred * pred, k, padding=pad, groups=C) - mu_x2
-    sigma_y2 = F.conv2d(target * target, k, padding=pad, groups=C) - mu_y2
+    # Variances are mathematically non-negative, but the conv-based
+    # E[x^2] - E[x]^2 estimator can yield small NEGATIVE values from rounding
+    # (worse under AMP / large activations). A negative variance makes the
+    # denominator factor (sigma_x2 + sigma_y2 + C2) small or negative; the old
+    # denominator.clamp(min=1e-8) then turned a tiny/negative denominator into a
+    # huge SSIM value (>> 1), which made the MS-SSIM loss (1 - prod) go negative
+    # and the optimizer chased it to -inf (observed: loss -> -1.4 then diverge).
+    # Clamp variances >= 0 so both denominator factors are strictly positive.
+    sigma_x2 = (F.conv2d(pred * pred, k, padding=pad, groups=C) - mu_x2).clamp(min=0.0)
+    sigma_y2 = (F.conv2d(target * target, k, padding=pad, groups=C) - mu_y2).clamp(min=0.0)
     sigma_xy = F.conv2d(pred * target, k, padding=pad, groups=C) - mu_xy
 
     numerator = (2 * mu_xy + C1) * (2 * sigma_xy + C2)
     denominator = (mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2)
-    return numerator / denominator.clamp(min=1e-8)
+    # Both denominator factors are now > 0 (C1, C2 > 0), so SSIM is bounded in
+    # [-1, 1]. Clamp to [0, 1] for the loss: negative SSIM (anti-correlation) is
+    # treated as "fully dissimilar", and the loss can never go below 0.
+    return (numerator / denominator).clamp(0.0, 1.0)
 
 
 class MSSSIMLoss(nn.Module):
@@ -142,12 +153,13 @@ class MSSSIMLoss(nn.Module):
             else:
                 mcs_values.append(ssim_map.mean())
 
-        # Per-scale SSIM means can be slightly negative (especially early in
-        # training when predictions are far from the target). Raising a negative
-        # base to a fractional power yields NaN, which would poison the whole
-        # loss. Clamp to a small positive floor before the weighted product.
+        # Per-scale SSIM means are now in [0, 1] (clamped in _ssim). Floor at
+        # 1e-6 before the fractional-power weighting so the base is strictly
+        # positive (0 ** w with w<1 is fine, but 1e-6 keeps gradients finite),
+        # and cap at 1.0 defensively so the product — and thus the loss — can
+        # never exceed the valid [0, 1] range.
         ms_ssim = torch.stack(
-            [v.clamp(min=1e-6) ** w for v, w in zip(mcs_values, self.weights)]
+            [v.clamp(min=1e-6, max=1.0) ** w for v, w in zip(mcs_values, self.weights)]
         ).prod()
         return 1.0 - ms_ssim
 
