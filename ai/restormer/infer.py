@@ -48,7 +48,7 @@ def load_model(
     else:
         model = Restormer()
 
-    state = torch.load(checkpoint_path, map_location=device)
+    state = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "model_state" in state:
         state = state["model_state"]
     model.load_state_dict(state, strict=True)

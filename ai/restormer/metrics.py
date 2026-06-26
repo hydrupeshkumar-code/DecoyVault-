@@ -57,15 +57,18 @@ def _ssim_single(
     mu2_sq = mu2 ** 2
     mu1_mu2 = mu1 * mu2
 
-    sigma1_sq = F.conv2d(pred * pred, kernel_2d, padding=pad, groups=C) - mu1_sq
-    sigma2_sq = F.conv2d(target * target, kernel_2d, padding=pad, groups=C) - mu2_sq
+    # Clamp variances non-negative: the conv-based E[x²]-E[x]² estimator can
+    # yield tiny negative values from rounding (especially under bfloat16).
+    # A negative variance makes SSIM > 1 and breaks the reported metric.
+    sigma1_sq = (F.conv2d(pred * pred, kernel_2d, padding=pad, groups=C) - mu1_sq).clamp(min=0.0)
+    sigma2_sq = (F.conv2d(target * target, kernel_2d, padding=pad, groups=C) - mu2_sq).clamp(min=0.0)
     sigma12 = F.conv2d(pred * target, kernel_2d, padding=pad, groups=C) - mu1_mu2
 
     C1, C2 = 0.01 ** 2, 0.03 ** 2
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / (
-        (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2).clamp(min=1e-8)
+        (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
     )
-    return ssim_map.mean()
+    return ssim_map.clamp(0.0, 1.0).mean()
 
 
 def ssim(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -84,9 +87,13 @@ def sam(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Te
     Lower is better.
     """
     dot = (pred * target).sum(dim=1)
-    norm_p = pred.norm(dim=1).clamp(min=eps)
-    norm_t = target.norm(dim=1).clamp(min=eps)
-    cos = (dot / (norm_p * norm_t)).clamp(-1 + eps, 1 - eps)
+    # sqrt(sum+eps) instead of norm().clamp(): the latter has a 0/0 NaN
+    # *gradient* at all-zero pixels (black borders, nodata). Under no_grad
+    # this only produces NaN metric values; the eps-inside-sqrt makes both
+    # the forward value and its gradient finite everywhere.
+    norm_p = torch.sqrt((pred * pred).sum(dim=1) + eps)
+    norm_t = torch.sqrt((target * target).sum(dim=1) + eps)
+    cos = (dot / (norm_p * norm_t)).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
     return torch.acos(cos).mean()
 
 

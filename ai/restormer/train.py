@@ -120,7 +120,7 @@ def load_checkpoint(
     ema: EMA,
     device: torch.device,
 ) -> tuple[int, int, Dict[str, float]]:
-    ckpt = torch.load(path, map_location=device)
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
     optimizer.load_state_dict(ckpt["optimizer_state"])
     scheduler.load_state_dict(ckpt["scheduler_state"])
@@ -188,7 +188,7 @@ class Trainer:
         self.resume_phase = 0
         self.resume_epoch = 0
         if resume_path:
-            header = torch.load(resume_path, map_location="cpu")
+            header = torch.load(resume_path, map_location="cpu", weights_only=False)
             self.resume_phase = int(header.get("phase", 0))
             self.resume_epoch = int(header.get("epoch", 0))
             log.info(
