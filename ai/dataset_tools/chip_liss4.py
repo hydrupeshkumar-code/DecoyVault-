@@ -241,6 +241,7 @@ def chip_scenes(
     max_nodata: float = 0.30,
     min_cloud: float = 0.02,
     max_cloud: float = 0.95,
+    match: str = "order",
 ) -> dict:
     cloudy_scenes = _discover_scenes(cloudy_dir)
     if not cloudy_scenes:
@@ -250,8 +251,30 @@ def chip_scenes(
             "or flat .tif files."
         )
 
-    # Build a lookup for clear scenes by stem
-    clear_scenes = {stem: src for stem, src in _discover_scenes(clear_dir)}
+    clear_scenes_list = _discover_scenes(clear_dir)
+    if not clear_scenes_list:
+        raise RuntimeError(f"No scenes found in {clear_dir}.")
+
+    # Pairing strategy:
+    #   order — zip sorted cloudy with sorted clear (Bhoonidhi: folder names differ
+    #           between seasons, so stem-match never works; use order instead)
+    #   stem  — match by identical folder/file name (only useful if you renamed them)
+    if match == "order":
+        n = min(len(cloudy_scenes), len(clear_scenes_list))
+        if len(cloudy_scenes) != len(clear_scenes_list):
+            log.warning(
+                "order-match: %d cloudy vs %d clear scenes; pairing the first %d.",
+                len(cloudy_scenes), len(clear_scenes_list), n,
+            )
+        pairs = [(cs, cl[1]) for cs, cl in zip(cloudy_scenes[:n], clear_scenes_list[:n])]
+    else:
+        clear_by_stem = {stem: src for stem, src in clear_scenes_list}
+        pairs = [(cs, clear_by_stem[cs[0]]) for cs in cloudy_scenes if cs[0] in clear_by_stem]
+        if not pairs:
+            raise RuntimeError(
+                "stem-match found no common names between cloudy/ and clear/. "
+                "Use --match order (default) for Bhoonidhi data."
+            )
 
     out_cloudy = output / "cloudy"
     out_clear  = output / "clear"
@@ -264,13 +287,7 @@ def chip_scenes(
     skipped_cloud = 0
     scenes_processed = 0
 
-    for stem, cloudy_source in cloudy_scenes:
-        # Match clear scene by stem; for Bhoonidhi dirs the stems are the long
-        # scene-folder names, so they must match exactly between cloudy/ and clear/.
-        clear_source = clear_scenes.get(stem)
-        if clear_source is None:
-            log.warning("No clear match for '%s' — skipping.", stem)
-            continue
+    for (stem, cloudy_source), clear_source in pairs:
 
         log.info("Processing scene: %s", stem)
         try:
@@ -376,6 +393,9 @@ def main() -> None:
                    help="Skip chips where > this fraction of pixels are zero (nodata/border)")
     p.add_argument("--min-cloud",  type=float, default=0.02)
     p.add_argument("--max-cloud",  type=float, default=0.95)
+    p.add_argument("--match",      default="order", choices=["order", "stem"],
+                   help="Pair cloudy<->clear by sort order (default, required for Bhoonidhi) "
+                        "or by matching folder/file name stem")
     args = p.parse_args()
 
     bands = [int(x) for x in args.bands.split(",")] if args.bands else None
@@ -393,6 +413,7 @@ def main() -> None:
         max_nodata=args.max_nodata,
         min_cloud=args.min_cloud,
         max_cloud=args.max_cloud,
+        match=args.match,
     )
 
     print("\n=== LISS-IV CHIPPING SUMMARY ===")
