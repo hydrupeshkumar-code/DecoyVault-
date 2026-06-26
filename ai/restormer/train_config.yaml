@@ -113,7 +113,9 @@ amp:
 # ---- Checkpointing ----
 checkpointing:
   checkpoint_dir: "ai/restormer/checkpoints"
-  save_every_n_epochs: 10
+  # last.pt is ALWAYS overwritten every epoch (crash-safe resume, ~400 MB).
+  # These milestone snapshots are extra, pruned to keep_last_n.
+  save_every_n_epochs: 2
   keep_last_n: 5
   resume_from: null  # set path to resume
 

@@ -130,6 +130,23 @@ def load_checkpoint(
     return ckpt["epoch"], ckpt["phase"], ckpt.get("metrics", {})
 
 
+def _prune_checkpoints(ckpt_dir: Path, phase_id: int, keep_last_n: int) -> None:
+    """Delete all but the newest keep_last_n milestone checkpoints for a phase.
+
+    Only touches phase{N}_epoch*.pt files; last.pt and phase{N}_final.pt are
+    never pruned. Keeps disk bounded over a long multi-epoch run.
+    """
+    if keep_last_n <= 0:
+        return
+    milestones = sorted(ckpt_dir.glob(f"phase{phase_id}_epoch*.pt"))
+    for old in milestones[:-keep_last_n]:
+        try:
+            old.unlink()
+            log.info("Pruned old checkpoint → %s", old)
+        except OSError as e:
+            log.warning("Could not prune %s: %s", old, e)
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -162,7 +179,22 @@ class Trainer:
 
         self._build_model()
         self._build_dataloaders()
+
+        # Resume metadata: peek at the checkpoint header so run() can skip
+        # already-finished phases and restart the current phase at the right
+        # epoch. Full state (model/optim/scheduler/scaler/ema) is restored later
+        # inside _run_phase, once those objects exist.
         self.resume_path = resume_path
+        self.resume_phase = 0
+        self.resume_epoch = 0
+        if resume_path:
+            header = torch.load(resume_path, map_location="cpu")
+            self.resume_phase = int(header.get("phase", 0))
+            self.resume_epoch = int(header.get("epoch", 0))
+            log.info(
+                "Resume requested: %s → phase %d, %d epoch(s) completed",
+                resume_path, self.resume_phase, self.resume_epoch,
+            )
 
     # ------------------------------------------------------------------
     # Model construction
@@ -298,7 +330,12 @@ class Trainer:
         scaler = GradScaler(self.device.type, enabled=use_scaler)
         ema = EMA(self.model, decay=phase_cfg["ema_decay"])
 
-        if self.resume_path and phase_id == 1 and start_epoch > 0:
+        # Restore full training state only when resuming INTO the same phase we
+        # checkpointed in (mid-phase continue). For a cross-phase resume
+        # (e.g. phase1_final → phase 2) the model weights already persist in
+        # self.model from the prior _run_phase call, and we deliberately start
+        # the new phase with a FRESH optimizer + scheduler at its own LR.
+        if self.resume_path and self.resume_phase == phase_id:
             load_checkpoint(
                 self.resume_path,
                 self.model,
@@ -313,6 +350,7 @@ class Trainer:
         log_every = self.cfg["logging"]["log_every_n_steps"]
         val_every = self.cfg["logging"]["val_every_n_epochs"]
         save_every = self.cfg["checkpointing"]["save_every_n_epochs"]
+        keep_last_n = self.cfg["checkpointing"].get("keep_last_n", 5)
 
         try:
             from torch.utils.tensorboard import SummaryWriter
@@ -430,7 +468,23 @@ class Trainer:
                     for k, v in val_metrics.items():
                         tb_writer.add_scalar(f"val/{k}", v, epoch)
 
-            # Checkpoint
+            # Crash-safe resume: overwrite a single rolling checkpoint EVERY
+            # epoch. Stopping the run (Ctrl+C, reboot, power loss) costs at most
+            # one epoch; resume with --resume <ckpt_dir>/last.pt.
+            save_checkpoint(
+                ckpt_dir / "last.pt",
+                epoch=epoch + 1,
+                phase=phase_id,
+                model=self.model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                ema=ema,
+                metrics={},
+            )
+
+            # Milestone checkpoints at the configured interval, pruned to the
+            # last keep_last_n so disk stays bounded over a long run.
             if (epoch + 1) % save_every == 0:
                 save_checkpoint(
                     ckpt_dir / f"phase{phase_id}_epoch{epoch + 1:04d}.pt",
@@ -443,6 +497,7 @@ class Trainer:
                     ema=ema,
                     metrics={},
                 )
+                _prune_checkpoints(ckpt_dir, phase_id, keep_last_n)
 
         # Save final checkpoint for this phase
         save_checkpoint(
@@ -489,13 +544,21 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        self._run_phase(1, self.cfg["phase1"])
+        rp = self.resume_phase  # 0 when not resuming
+
+        # Phase 1 — skipped outright if the checkpoint is already past it.
+        if rp <= 1:
+            self._run_phase(1, self.cfg["phase1"],
+                            start_epoch=self.resume_epoch if rp == 1 else 0)
 
         if self.smoke:
             log.info("SMOKE MODE complete — Phase 1 ran end-to-end. Skipping Phases 2/3.")
             return
 
-        self._run_phase(2, self.cfg["phase2"])
+        # Phase 2
+        if rp <= 2:
+            self._run_phase(2, self.cfg["phase2"],
+                            start_epoch=self.resume_epoch if rp == 2 else 0)
 
         # Phase 3: fine-tune on real LISS-IV data
         p3 = self.cfg.get("phase3", {})
@@ -516,7 +579,7 @@ class Trainer:
                 pin_memory=True,
                 drop_last=True,
             )
-            self._run_phase(3, p3)
+            self._run_phase(3, p3, start_epoch=self.resume_epoch if rp == 3 else 0)
         else:
             log.info("Phase 3 skipped (no LISS-IV data found at %s)", p3.get("liss4_root"))
 
