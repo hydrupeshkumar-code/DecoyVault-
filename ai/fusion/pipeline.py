@@ -55,7 +55,7 @@ class CloudRemovalPipeline:
 
         # Restormer
         self.restormer = Restormer().to(self.device)
-        state = torch.load(restormer_ckpt, map_location=self.device)
+        state = torch.load(restormer_ckpt, map_location=self.device, weights_only=False)
         if "model_state" in state:
             state = state["model_state"]
         self.restormer.load_state_dict(state)
@@ -66,7 +66,7 @@ class CloudRemovalPipeline:
         if detector_ckpt and Path(detector_ckpt).exists():
             self.detector = CloudDetector(in_channels=3).to(self.device)
             self.detector.load_state_dict(
-                torch.load(detector_ckpt, map_location=self.device)
+                torch.load(detector_ckpt, map_location=self.device, weights_only=False)
             )
             self.detector.eval()
 
