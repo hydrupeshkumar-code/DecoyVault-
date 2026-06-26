@@ -307,8 +307,14 @@ def chip_scenes(
             continue
 
         if cloudy_3.shape != clear_3.shape:
-            log.warning("Shape mismatch %s vs %s for %s — skipping.", cloudy_3.shape, clear_3.shape, stem)
-            continue
+            min_h = min(cloudy_3.shape[1], clear_3.shape[1])
+            min_w = min(cloudy_3.shape[2], clear_3.shape[2])
+            log.warning(
+                "Shape mismatch %s vs %s for %s — cropping both to (%d, %d).",
+                cloudy_3.shape, clear_3.shape, stem, min_h, min_w,
+            )
+            cloudy_3 = cloudy_3[:, :min_h, :min_w]
+            clear_3  = clear_3[:, :min_h, :min_w]
 
         cloudy_n = _normalize(cloudy_3, normalize, max_dn)
         clear_n  = _normalize(clear_3, normalize, max_dn)
