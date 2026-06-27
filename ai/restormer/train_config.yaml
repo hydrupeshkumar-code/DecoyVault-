@@ -90,7 +90,7 @@ phase3:
   grad_clip: 0.5
   ema_decay: 0.9999
   use_adversarial: true
-  liss4_root: "datasets/liss4"
+  liss4_root: "datasets/rice2_prepared"
   min_cloud_fraction: 0.05
   max_cloud_fraction: 0.90
 

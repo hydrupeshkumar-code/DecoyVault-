@@ -216,7 +216,11 @@ def main() -> None:
 
     chips_root = Path(args.chips)
     cloudy_dir = chips_root / "cloudy"
-    mask_dir   = chips_root / "masks" if (chips_root / "masks").exists() else None
+    # Accept both masks/ (LISS-IV convention) and mask/ (RICE2 convention)
+    mask_dir = next(
+        (chips_root / d for d in ("masks", "mask") if (chips_root / d).exists()),
+        None,
+    )
 
     # --- pick chip ---
     if args.chip:

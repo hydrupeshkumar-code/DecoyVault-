@@ -75,10 +75,19 @@ class LISS4Dataset(CloudRemovalDataset):
     def dataset_name(self) -> str:
         return "LISS-IV"
 
+    @staticmethod
+    def _resolve_mask_dir(root: Path) -> Path:
+        """Return masks/ or mask/ — whichever exists (RICE2 uses singular)."""
+        for name in ("masks", "mask"):
+            d = root / name
+            if d.exists():
+                return d
+        return root / "masks"  # canonical name for error messages
+
     def _collect_samples(self) -> list[str]:
         cloudy_dir = self.root / "cloudy"
         clear_dir  = self.root / "clear"
-        mask_dir   = self.root / "masks"
+        mask_dir   = self._resolve_mask_dir(self.root)
 
         if not cloudy_dir.exists():
             raise RuntimeError(
@@ -132,7 +141,7 @@ class LISS4Dataset(CloudRemovalDataset):
             clear_arr = cloudy_arr.copy()
 
         # Cloud mask
-        mask_dir = self.root / "masks"
+        mask_dir = self._resolve_mask_dir(self.root)
         if mask_dir.exists():
             try:
                 mask_path = self._find_file(mask_dir, stem)
