@@ -138,28 +138,50 @@ def scan_chips(
     mask_dir: Path | None,
     target_cloud_lo: float = 0.15,
     target_cloud_hi: float = 0.60,
-    max_scan: int = 50,
-) -> list[tuple[str, float]]:
+    min_ndvi: float = 0.0,
+    max_scan: int = 100,
+) -> list[tuple[str, float, float]]:
     """
-    Return (stem, cloud_fraction) pairs with cloud fraction in [lo, hi],
-    sorted by cloud fraction descending (most visually interesting first).
+    Return (stem, cloud_fraction, clear_ndvi) triples with cloud fraction in [lo, hi]
+    and clear-pixel NDVI >= min_ndvi, sorted by clear NDVI descending so the most
+    vegetation-rich (rice/agriculture) chips come first.
+
+    Band order in chips: [0]=Green, [1]=Red, [2]=NIR  (LISS-IV convention).
     """
     candidates = []
     for p in sorted(cloudy_dir.glob("*.npy"))[:max_scan]:
+        arr = np.load(p).astype(np.float32)
+        if arr.ndim == 3 and arr.shape[2] <= 4:
+            arr = arr.transpose(2, 0, 1)  # HWC → CHW
+
         if mask_dir is not None and (mask_dir / p.name).exists():
             mask = np.load(mask_dir / p.name)
+            if mask.ndim == 3:
+                mask = mask[0]
             cf = float(mask.mean())
+            clear_px = mask < 0.5        # boolean [H,W]
         else:
-            # Estimate from cloudy image: high brightness across all bands ≈ cloud
-            arr = np.load(p).astype(np.float32)
-            if arr.ndim == 3 and arr.shape[2] <= 4:
-                arr = arr.transpose(2, 0, 1)  # HWC → CHW
+            # Estimate cloud mask: bright pixels (all bands > 0.6) ≈ cloud
             brightness = arr.mean(axis=0)
-            cf = float((brightness > 0.6).mean())
-        if target_cloud_lo <= cf <= target_cloud_hi:
-            candidates.append((p.stem, cf))
+            clear_px = brightness < 0.6
+            cf = float((~clear_px).mean())
 
-    candidates.sort(key=lambda x: x[1], reverse=True)
+        if not (target_cloud_lo <= cf <= target_cloud_hi):
+            continue
+
+        # Compute NDVI over clear-sky pixels only
+        red = arr[1][clear_px]
+        nir = arr[2][clear_px]
+        if red.size > 100:
+            ndvi = float(((nir - red) / (nir + red + 1e-8)).mean())
+        else:
+            ndvi = 0.0
+
+        if ndvi >= min_ndvi:
+            candidates.append((p.stem, cf, ndvi))
+
+    # Sort by NDVI descending — vegetation-rich chips first
+    candidates.sort(key=lambda x: x[2], reverse=True)
     return candidates
 
 
@@ -174,6 +196,8 @@ def main() -> None:
     parser.add_argument("--output",     default="demo_result.png")
     parser.add_argument("--config",     default=None)
     parser.add_argument("--chip",       default=None, help="Force a specific chip stem")
+    parser.add_argument("--min-ndvi",   type=float, default=0.2,
+                        help="Minimum clear-sky NDVI to qualify (0.2=vegetation, 0.4=dense rice)")
     parser.add_argument("--tile",       action="store_true")
     parser.add_argument("--tile-size",  type=int, default=256)
     parser.add_argument("--overlap",    type=int, default=32)
@@ -198,20 +222,23 @@ def main() -> None:
     if args.chip:
         stem = args.chip
         cf   = None
+        ndvi_clear = None
     else:
-        print("[demo] Scanning chips for good partial-cloud example …")
-        candidates = scan_chips(cloudy_dir, mask_dir)
+        print(f"[demo] Scanning chips for vegetation-rich partial-cloud example (min NDVI={args.min_ndvi}) …")
+        candidates = scan_chips(cloudy_dir, mask_dir, min_ndvi=args.min_ndvi)
+        if not candidates:
+            print("[demo] No chips with NDVI >= {args.min_ndvi} found. Relaxing to any vegetation …")
+            candidates = scan_chips(cloudy_dir, mask_dir, min_ndvi=0.0)
         if not candidates:
             print("[demo] No chips with cloud fraction 0.15-0.60 found. Trying full range …")
-            candidates = scan_chips(cloudy_dir, mask_dir, 0.05, 0.95)
+            candidates = scan_chips(cloudy_dir, mask_dir, 0.05, 0.95, min_ndvi=0.0)
         if not candidates:
-            # Just pick the first chip available
             first = next(cloudy_dir.glob("*.npy"), None)
             if first is None:
                 sys.exit(f"[demo] No .npy chips found in {cloudy_dir}")
-            candidates = [(first.stem, -1.0)]
-        stem, cf = candidates[0]
-        print(f"[demo] Selected chip: {stem}  (cloud fraction ≈ {cf:.2f})")
+            candidates = [(first.stem, -1.0, 0.0)]
+        stem, cf, ndvi_clear = candidates[0]
+        print(f"[demo] Selected chip: {stem}  cloud={cf:.2f}  clear-NDVI={ndvi_clear:+.3f}")
 
     # --- load chip ---
     chip_path = cloudy_dir / f"{stem}.npy"
@@ -256,7 +283,11 @@ def main() -> None:
     print(f"[demo] NDVI  cloudy={ndvi_c:+.3f}  result={ndvi_r:+.3f}  Δ={ndvi_r - ndvi_c:+.3f}")
 
     # --- save comparison ---
-    title_str = f"Chip: {stem}  |  Cloud: {(cf or 0):.0%}  |  NDVI: {ndvi_c:+.2f}→{ndvi_r:+.2f}"
+    title_str = (
+        f"Chip: {stem}  |  Cloud: {(cf or 0):.0%}"
+        f"  |  Clear-NDVI (input): {ndvi_c:+.2f}"
+        f"  |  NDVI (result): {ndvi_r:+.2f}"
+    )
     save_comparison_png(cloudy_hwc, result_hwc, mask_hw, args.output, title=title_str)
 
     # Also save raw result .npy
