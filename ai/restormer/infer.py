@@ -57,6 +57,40 @@ def load_model(
     return model
 
 
+def _hist_match_to_reference(
+    result: np.ndarray,
+    reference: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Per-channel linear rescale so result mean/std matches reference (cloud-free areas).
+
+    This corrects global radiometric offset from domain shift (e.g. model trained on
+    Sentinel-2 applied to LISS-IV).  Only clear-sky pixels from `reference` are used
+    as the target distribution; the mask marks cloud pixels (1=cloud, 0=clear).
+    """
+    out = result.copy()
+    for c in range(result.shape[2]):
+        src = result[:, :, c]
+        if mask is not None:
+            clear_mask = mask < 0.5          # cloud-free reference pixels
+            ref_vals = reference[:, :, c][clear_mask]
+        else:
+            ref_vals = reference[:, :, c].ravel()
+
+        if ref_vals.size < 100:
+            continue  # not enough clear pixels to estimate distribution
+
+        ref_mean = float(ref_vals.mean())
+        ref_std  = float(ref_vals.std()) + 1e-8
+        src_mean = float(src.mean())
+        src_std  = float(src.std()) + 1e-8
+
+        out[:, :, c] = (src - src_mean) * (ref_std / src_std) + ref_mean
+
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
 @torch.no_grad()
 def infer(
     model: Restormer,
@@ -66,18 +100,21 @@ def infer(
     tile: bool = False,
     tile_size: int = 256,
     overlap: int = 32,
+    hist_match: bool = False,
 ) -> np.ndarray:
     """
     Run inference on a single image.
 
     Args:
-        model:     Loaded Restormer model.
-        image:     [H, W, 3] float32 array in [0, 1], channels (Green, Red, NIR).
-        mask:      Optional [H, W] binary cloud mask.
-        device:    Compute device.
-        tile:      Use tiled inference for large images.
-        tile_size: Tile size (default 256).
-        overlap:   Overlap between tiles.
+        model:      Loaded Restormer model.
+        image:      [H, W, 3] float32 array in [0, 1], channels (Green, Red, NIR).
+        mask:       Optional [H, W] binary cloud mask.
+        device:     Compute device.
+        tile:       Use tiled inference for large images.
+        tile_size:  Tile size (default 256).
+        overlap:    Overlap between tiles.
+        hist_match: Rescale result mean/std to match cloud-free input areas, correcting
+                    global domain-shift brightness offset (recommended for LISS-IV).
 
     Returns:
         [H, W, 3] restored float32 array in [0, 1].
@@ -90,6 +127,9 @@ def infer(
     t = torch.from_numpy(image.transpose(2, 0, 1)).unsqueeze(0).to(device)  # [1, 3, H, W]
     out = model(t)                                                             # [1, 3, H, W]
     out_np = out.squeeze(0).cpu().numpy().transpose(1, 2, 0)                  # [H, W, 3]
+
+    if hist_match:
+        out_np = _hist_match_to_reference(out_np, image, mask)
 
     # Apply mask: clear pixels keep original values
     if mask is not None:
@@ -109,6 +149,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--tile", action="store_true", help="Use tiled inference")
     parser.add_argument("--tile-size", type=int, default=256)
     parser.add_argument("--overlap", type=int, default=32)
+    parser.add_argument(
+        "--hist-match", action="store_true",
+        help="Rescale output mean/std to match cloud-free input areas (fixes domain-shift brightness)",
+    )
     return parser.parse_args()
 
 
@@ -148,6 +192,7 @@ def main() -> None:
         tile=args.tile,
         tile_size=args.tile_size,
         overlap=args.overlap,
+        hist_match=args.hist_match,
     )
 
     out_path = Path(args.output)
