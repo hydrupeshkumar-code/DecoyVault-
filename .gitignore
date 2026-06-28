@@ -6,6 +6,7 @@ dist/
 build/
 .env
 .venv/
+.venv312/
 venv/
 
 # Checkpoints & large files
@@ -14,15 +15,28 @@ ai/cloud_detector/checkpoints/*.pt
 *.ckpt
 
 # Dataset raw files (large)
+datasets/**/*.npy
 datasets/sen2cr/cloudy/*.npy
 datasets/sen2cr/clear/*.npy
 datasets/sen2cr/masks/*.npy
 datasets/liss4/**/*.npy
 
 # Outputs
+outputs/**
+!outputs/metrics/.gitkeep
+!outputs/reports/.gitkeep
+!outputs/visualizations/.gitkeep
 outputs/uploads/
 outputs/predictions/
 outputs/reports/*.pdf
+
+# Local generated artifacts
+demo_*.npy
+demo_*.png
+rice2_result_*.png
+previews_clear/
+previews_cloudy/
+DecoyVault-/
 
 # Node
 frontend/node_modules/
@@ -40,3 +54,4 @@ docker/.env
 # OS
 .DS_Store
 Thumbs.db
+.datasets
