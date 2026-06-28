@@ -129,7 +129,13 @@ The trained base checkpoint in this workspace is:
 Since checkpoints are excluded from git, hand off this file out-of-band and
 verify with the SHA256 above.
 
-Once LISS-4 data is prepared in `datasets/liss4/`, continue training with:
+Once LISS-4 data is prepared in `datasets/liss4/`, validate readiness with:
+
+```bash
+python scripts/check_phase3_ready.py
+```
+
+If that passes, continue training with:
 
 ```bash
 python -m ai.restormer.train \

@@ -93,9 +93,12 @@ step is LISS-4 fine-tuning by the handoff teammate.
 Fine-tuning handoff command:
 
 ```bash
-python -m ai.restormer.train \
-    --config ai/restormer/train_config.yaml \
-    --resume ai/restormer/checkpoints/phase2_final.pt
+python scripts/check_phase3_ready.py
+```
+
+If the check passes, run:
+
+```bash
 ```
 
 Phase 3 starts when prepared LISS-4 pairs exist at the configured
