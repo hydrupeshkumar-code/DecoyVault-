@@ -57,9 +57,6 @@ def per_band_accuracy(
 
     # Apply optional mask
     if mask is not None:
-        bool_mask = mask.bool().expand_as(pred)
-        p = pred[bool_mask].reshape(3, -1).T if mask.shape[1] == 1 else pred[bool_mask]
-        # Proper per-band masking
         for b, name in enumerate(BAND_NAMES):
             bm = mask[:, 0].bool()
             p_b = pred[:, b][bm].flatten()

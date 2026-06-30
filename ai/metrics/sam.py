@@ -24,9 +24,10 @@ def sam(
         Scalar SAM.  Lower is better.
     """
     dot = (pred * target).sum(dim=1)
-    norm_p = pred.norm(dim=1).clamp(min=eps)
-    norm_t = target.norm(dim=1).clamp(min=eps)
-    cos = (dot / (norm_p * norm_t)).clamp(-1 + eps, 1 - eps)
+    # sqrt(sum+eps) avoids the NaN *gradient* that norm().clamp() has at zero pixels
+    norm_p = torch.sqrt((pred * pred).sum(dim=1) + eps)
+    norm_t = torch.sqrt((target * target).sum(dim=1) + eps)
+    cos = (dot / (norm_p * norm_t)).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
     angle = torch.acos(cos)
     if degrees:
         angle = torch.rad2deg(angle)

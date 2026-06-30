@@ -118,6 +118,34 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 The demo pipeline (`detect → reconstruct → metrics → report`) now uses the real
 model instead of the clear-region-mean fallback.
 
+## 7. Teammate handoff: LISS-4 fine-tuning
+
+The trained base checkpoint in this workspace is:
+
+- `ai/restormer/checkpoints/phase2_final.pt`
+- Size: `407741217` bytes
+- SHA256: `1B377C3D43D6F0943CEA5D1D07FF907DFF165CFEBBDE14E6EA224C4DD849AA74`
+
+Since checkpoints are excluded from git, hand off this file out-of-band and
+verify with the SHA256 above.
+
+Once LISS-4 data is prepared in `datasets/liss4/`, validate readiness with:
+
+```bash
+python scripts/check_phase3_ready.py
+```
+
+If that passes, continue training with:
+
+```bash
+python -m ai.restormer.train \
+  --config ai/restormer/train_config.yaml \
+  --resume ai/restormer/checkpoints/phase2_final.pt
+```
+
+This continues from the trained base model and enables Phase 3 when LISS-4 is
+present.
+
 ---
 
 ### Tuning knobs (`ai/restormer/train_config.yaml`)

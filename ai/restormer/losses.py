@@ -40,9 +40,17 @@ class SAMLoss(nn.Module):
             Scalar SAM loss.
         """
         dot = (pred * target).sum(dim=1)                  # [B, H, W]
-        norm_pred = pred.norm(dim=1).clamp(min=self.eps)
-        norm_tgt = target.norm(dim=1).clamp(min=self.eps)
-        cos_angle = (dot / (norm_pred * norm_tgt)).clamp(-1 + self.eps, 1 - self.eps)
+        # CRITICAL: compute the norm as sqrt(sum_of_squares + eps), NOT as
+        # tensor.norm().clamp(min=eps). torch.norm has a 0/0 NaN *gradient* at
+        # all-zero (black) pixels — clamping the forward OUTPUT does not fix the
+        # backward pass. Putting eps INSIDE the sqrt makes the gradient finite
+        # everywhere. Black pixels are common in real data (image borders,
+        # nodata fill), so this is the difference between training and NaN.
+        norm_pred = torch.sqrt((pred * pred).sum(dim=1) + self.eps)
+        norm_tgt = torch.sqrt((target * target).sum(dim=1) + self.eps)
+        # Keep cos strictly inside (-1, 1): acos has infinite gradient at the
+        # endpoints. A 1e-6 margin caps the gradient at ~1/sqrt(2e-6) ≈ 700.
+        cos_angle = (dot / (norm_pred * norm_tgt)).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
         angle = torch.acos(cos_angle)                     # [B, H, W]
         return angle.mean()
 
@@ -77,13 +85,24 @@ def _ssim(
     mu_y2 = mu_y * mu_y
     mu_xy = mu_x * mu_y
 
-    sigma_x2 = F.conv2d(pred * pred, k, padding=pad, groups=C) - mu_x2
-    sigma_y2 = F.conv2d(target * target, k, padding=pad, groups=C) - mu_y2
+    # Variances are mathematically non-negative, but the conv-based
+    # E[x^2] - E[x]^2 estimator can yield small NEGATIVE values from rounding
+    # (worse under AMP / large activations). A negative variance makes the
+    # denominator factor (sigma_x2 + sigma_y2 + C2) small or negative; the old
+    # denominator.clamp(min=1e-8) then turned a tiny/negative denominator into a
+    # huge SSIM value (>> 1), which made the MS-SSIM loss (1 - prod) go negative
+    # and the optimizer chased it to -inf (observed: loss -> -1.4 then diverge).
+    # Clamp variances >= 0 so both denominator factors are strictly positive.
+    sigma_x2 = (F.conv2d(pred * pred, k, padding=pad, groups=C) - mu_x2).clamp(min=0.0)
+    sigma_y2 = (F.conv2d(target * target, k, padding=pad, groups=C) - mu_y2).clamp(min=0.0)
     sigma_xy = F.conv2d(pred * target, k, padding=pad, groups=C) - mu_xy
 
     numerator = (2 * mu_xy + C1) * (2 * sigma_xy + C2)
     denominator = (mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2)
-    return numerator / denominator.clamp(min=1e-8)
+    # Both denominator factors are now > 0 (C1, C2 > 0), so SSIM is bounded in
+    # [-1, 1]. Clamp to [0, 1] for the loss: negative SSIM (anti-correlation) is
+    # treated as "fully dissimilar", and the loss can never go below 0.
+    return (numerator / denominator).clamp(0.0, 1.0)
 
 
 class MSSSIMLoss(nn.Module):
@@ -134,12 +153,13 @@ class MSSSIMLoss(nn.Module):
             else:
                 mcs_values.append(ssim_map.mean())
 
-        # Per-scale SSIM means can be slightly negative (especially early in
-        # training when predictions are far from the target). Raising a negative
-        # base to a fractional power yields NaN, which would poison the whole
-        # loss. Clamp to a small positive floor before the weighted product.
+        # Per-scale SSIM means are now in [0, 1] (clamped in _ssim). Floor at
+        # 1e-6 before the fractional-power weighting so the base is strictly
+        # positive (0 ** w with w<1 is fine, but 1e-6 keeps gradients finite),
+        # and cap at 1.0 defensively so the product — and thus the loss — can
+        # never exceed the valid [0, 1] range.
         ms_ssim = torch.stack(
-            [v.clamp(min=1e-6) ** w for v, w in zip(mcs_values, self.weights)]
+            [v.clamp(min=1e-6, max=1.0) ** w for v, w in zip(mcs_values, self.weights)]
         ).prod()
         return 1.0 - ms_ssim
 
@@ -284,17 +304,27 @@ class CloudRemovalLoss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         discriminator: nn.Module | None = None,
+        cloudy: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Args:
             pred:          [B, 3, H, W] model output.
             target:        [B, 3, H, W] ground-truth clear image.
             discriminator: Optional PatchDiscriminator (required if use_adversarial).
+            cloudy:        [B, 3, H, W] cloudy input (required for conditional adversarial loss).
 
         Returns:
             Dictionary with keys 'total', 'l1', 'sam', 'ms_ssim', 'gradient',
             and optionally 'adversarial'.
         """
+        # Cast to float32 before loss computation. float16 has a minimum positive
+        # value of ~6e-8, so the 1e-8 clamp in MS-SSIM and the 1e-6 clamp in the
+        # ms_ssim weighted product both silently underflow to 0.0, producing 0/0 = NaN
+        # on the very first step under AMP. Explicit float32 cast overrides autocast
+        # for these ops while the model forward pass still runs in float16/bfloat16.
+        pred = pred.float()
+        target = target.float()
+
         l1 = F.l1_loss(pred, target)
         sam = self.sam_loss(pred, target)
         ms_ssim = self.msssim_loss(pred, target)
@@ -315,7 +345,12 @@ class CloudRemovalLoss(nn.Module):
         }
 
         if self.use_adversarial and discriminator is not None:
-            adv = self.adv_loss(discriminator, pred)
+            # Conditional discriminator expects cat([condition, generated], dim=1).
+            if cloudy is not None:
+                gen_input = torch.cat([cloudy.float(), pred], dim=1)
+            else:
+                gen_input = pred
+            adv = self.adv_loss(discriminator, gen_input)
             total = total + self.w_adv * adv
             losses["adversarial"] = adv
 

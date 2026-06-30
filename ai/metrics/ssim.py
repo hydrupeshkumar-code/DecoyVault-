@@ -40,10 +40,12 @@ def ssim(
     mu2 = F.conv2d(target, kernel, padding=pad, groups=C)
     mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
 
-    sigma1_sq = F.conv2d(pred * pred, kernel, padding=pad, groups=C) - mu1_sq
-    sigma2_sq = F.conv2d(target * target, kernel, padding=pad, groups=C) - mu2_sq
+    # Clamp variances non-negative: conv-based E[x²]-E[x]² can yield tiny
+    # negative values from rounding under bfloat16, making SSIM > 1.
+    sigma1_sq = (F.conv2d(pred * pred, kernel, padding=pad, groups=C) - mu1_sq).clamp(min=0.0)
+    sigma2_sq = (F.conv2d(target * target, kernel, padding=pad, groups=C) - mu2_sq).clamp(min=0.0)
     sigma12 = F.conv2d(pred * target, kernel, padding=pad, groups=C) - mu1_mu2
 
     numerator = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
-    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2).clamp(min=1e-8)
-    return (numerator / denominator).mean()
+    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+    return (numerator / denominator).clamp(0.0, 1.0).mean()

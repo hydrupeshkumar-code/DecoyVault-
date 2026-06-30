@@ -3,12 +3,20 @@ LISS-IV real imagery dataset adapter.
 
 Used for Phase 3 fine-tuning and evaluation on real Resourcesat-2/2A scenes.
 
-On-disk layout:
+On-disk layout (two supported formats):
+
+  Raw scenes (GeoTIFF):
     root/
         cloudy/   <scene_id>.tif   — [H, W, 3] Green/Red/NIR GeoTIFF
         clear/    <scene_id>.tif   — same scene, cloud-free reference
         masks/    <scene_id>.tif   — cloud mask
         meta/     <scene_id>.json  — acquisition metadata (optional)
+
+  Chipped tiles (produced by ai/dataset_tools/chip_liss4.py):
+    root/
+        cloudy/   <chip_id>.npy    — [H, W, 3] float32 in [0, 1]
+        clear/    <chip_id>.npy    — [H, W, 3] float32 in [0, 1]
+        masks/    <chip_id>.npy    — [H, W]    float32 binary
 
 Band convention:
     Band 0 → LISS-IV Green (~520–590 nm)
@@ -34,10 +42,18 @@ import torch
 from ai.datasets.base import CloudRemovalDataset, CloudSample, CloudSceneMeta
 from ai.geospatial.tiff_io import TiffMeta, load_any, read_tiff
 
+_TIFF_EXTS = {".tif", ".tiff"}
+_NPY_EXT   = ".npy"
+_ALL_EXTS  = _TIFF_EXTS | {_NPY_EXT}
+
 
 class LISS4Dataset(CloudRemovalDataset):
     """
     Real LISS-IV imagery dataset adapter.
+
+    Accepts both raw GeoTIFF scenes and pre-chipped .npy tiles (output of
+    ai/dataset_tools/chip_liss4.py).  .npy files take priority when both
+    are present for the same stem.
 
     Args:
         root_dir:     Root of the LISS-IV dataset.
@@ -59,21 +75,36 @@ class LISS4Dataset(CloudRemovalDataset):
     def dataset_name(self) -> str:
         return "LISS-IV"
 
+    @staticmethod
+    def _resolve_mask_dir(root: Path) -> Path:
+        """Return masks/ or mask/ — whichever exists (RICE2 uses singular)."""
+        for name in ("masks", "mask"):
+            d = root / name
+            if d.exists():
+                return d
+        return root / "masks"  # canonical name for error messages
+
     def _collect_samples(self) -> list[str]:
         cloudy_dir = self.root / "cloudy"
         clear_dir  = self.root / "clear"
-        mask_dir   = self.root / "masks"
+        mask_dir   = self._resolve_mask_dir(self.root)
 
         if not cloudy_dir.exists():
             raise RuntimeError(
                 f"[LISS-IV] cloudy/ directory not found at {self.root}. "
-                "Place LISS-IV GeoTIFF scenes in cloudy/, clear/, masks/."
+                "Place LISS-IV scenes (GeoTIFF or chipped .npy) in cloudy/, clear/, masks/."
             )
 
-        exts = {".tif", ".tiff"}
-        cloudy = {p.stem for p in cloudy_dir.iterdir() if p.suffix.lower() in exts}
-        clear  = {p.stem for p in clear_dir.iterdir()  if p.suffix.lower() in exts} if clear_dir.exists() else cloudy
-        masks  = {p.stem for p in mask_dir.iterdir()   if p.suffix.lower() in exts} if mask_dir.exists() else set()
+        cloudy = {p.stem for p in cloudy_dir.iterdir() if p.suffix.lower() in _ALL_EXTS}
+        clear  = {p.stem for p in clear_dir.iterdir()  if p.suffix.lower() in _ALL_EXTS} if clear_dir.exists() else cloudy
+        masks  = {p.stem for p in mask_dir.iterdir()   if p.suffix.lower() in _ALL_EXTS} if mask_dir.exists() else set()
+
+        if not cloudy:
+            raise RuntimeError(
+                f"[LISS-IV] No samples found in {cloudy_dir}. "
+                "Run ai/dataset_tools/chip_liss4.py to generate .npy chips, "
+                "or place raw GeoTIFF scenes here."
+            )
 
         # For inference-only (no clear reference), accept cloudy-only
         if masks:
@@ -85,7 +116,12 @@ class LISS4Dataset(CloudRemovalDataset):
 
     def _load_sample(self, stem: str) -> CloudSample:
         cloudy_path = self._find_file(self.root / "cloudy", stem)
-        cloudy_arr, tiff_meta = read_tiff(str(cloudy_path), normalize=True)
+
+        if cloudy_path.suffix.lower() == _NPY_EXT:
+            cloudy_arr = _load_npy_chw(cloudy_path)
+            tiff_meta  = None
+        else:
+            cloudy_arr, tiff_meta = read_tiff(str(cloudy_path), normalize=True)
 
         if self._preserve_meta and tiff_meta is not None:
             self._tiff_metas[stem] = tiff_meta
@@ -95,23 +131,32 @@ class LISS4Dataset(CloudRemovalDataset):
         if clear_dir.exists():
             try:
                 clear_path = self._find_file(clear_dir, stem)
-                clear_arr, _ = read_tiff(str(clear_path), normalize=True)
+                if clear_path.suffix.lower() == _NPY_EXT:
+                    clear_arr = _load_npy_chw(clear_path)
+                else:
+                    clear_arr, _ = read_tiff(str(clear_path), normalize=True)
             except FileNotFoundError:
                 clear_arr = cloudy_arr.copy()
         else:
             clear_arr = cloudy_arr.copy()
 
         # Cloud mask
-        mask_dir = self.root / "masks"
+        mask_dir = self._resolve_mask_dir(self.root)
         if mask_dir.exists():
             try:
                 mask_path = self._find_file(mask_dir, stem)
-                mask_arr, _ = load_any(mask_path, normalize=False)
-                if mask_arr.ndim == 3 and mask_arr.shape[0] > 1:
-                    mask_arr = mask_arr[0:1]
-                elif mask_arr.ndim == 2:
-                    mask_arr = mask_arr[np.newaxis]
-                mask_arr = (mask_arr > 0.5).astype(np.float32)
+                if mask_path.suffix.lower() == _NPY_EXT:
+                    m = np.load(mask_path)
+                    if m.ndim == 2:
+                        m = m[np.newaxis]
+                    mask_arr = (m > 0.5).astype(np.float32)
+                else:
+                    mask_raw, _ = load_any(mask_path, normalize=False)
+                    if mask_raw.ndim == 3 and mask_raw.shape[0] > 1:
+                        mask_raw = mask_raw[0:1]
+                    elif mask_raw.ndim == 2:
+                        mask_raw = mask_raw[np.newaxis]
+                    mask_arr = (mask_raw > 0.5).astype(np.float32)
             except FileNotFoundError:
                 mask_arr = np.zeros((1, cloudy_arr.shape[1], cloudy_arr.shape[2]), dtype=np.float32)
         else:
@@ -151,8 +196,19 @@ class LISS4Dataset(CloudRemovalDataset):
 
     @staticmethod
     def _find_file(directory: Path, stem: str) -> Path:
-        for ext in (".tif", ".tiff", ".TIF", ".TIFF"):
+        # Check .npy first (chips), then GeoTIFF variants
+        for ext in (_NPY_EXT, ".tif", ".tiff", ".TIF", ".TIFF"):
             p = directory / f"{stem}{ext}"
             if p.exists():
                 return p
-        raise FileNotFoundError(f"No TIFF with stem '{stem}' in {directory}")
+        raise FileNotFoundError(f"No file with stem '{stem}' in {directory}")
+
+
+def _load_npy_chw(path: Path) -> np.ndarray:
+    """Load a chip .npy saved as [H, W, C] and return [C, H, W] float32."""
+    arr = np.load(path).astype(np.float32)
+    if arr.ndim == 2:
+        arr = arr[np.newaxis]            # [H, W] → [1, H, W]
+    elif arr.ndim == 3 and arr.shape[2] <= 4:
+        arr = arr.transpose(2, 0, 1)    # [H, W, C] → [C, H, W]
+    return arr

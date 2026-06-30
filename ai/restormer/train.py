@@ -25,7 +25,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Subset, random_split
@@ -120,7 +120,7 @@ def load_checkpoint(
     ema: EMA,
     device: torch.device,
 ) -> tuple[int, int, Dict[str, float]]:
-    ckpt = torch.load(path, map_location=device)
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
     optimizer.load_state_dict(ckpt["optimizer_state"])
     scheduler.load_state_dict(ckpt["scheduler_state"])
@@ -128,6 +128,23 @@ def load_checkpoint(
     ema.shadow = ckpt["ema_shadow"]
     log.info("Resumed from %s (epoch %d, phase %d)", path, ckpt["epoch"], ckpt["phase"])
     return ckpt["epoch"], ckpt["phase"], ckpt.get("metrics", {})
+
+
+def _prune_checkpoints(ckpt_dir: Path, phase_id: int, keep_last_n: int) -> None:
+    """Delete all but the newest keep_last_n milestone checkpoints for a phase.
+
+    Only touches phase{N}_epoch*.pt files; last.pt and phase{N}_final.pt are
+    never pruned. Keeps disk bounded over a long multi-epoch run.
+    """
+    if keep_last_n <= 0:
+        return
+    milestones = sorted(ckpt_dir.glob(f"phase{phase_id}_epoch*.pt"))
+    for old in milestones[:-keep_last_n]:
+        try:
+            old.unlink()
+            log.info("Pruned old checkpoint → %s", old)
+        except OSError as e:
+            log.warning("Could not prune %s: %s", old, e)
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +179,22 @@ class Trainer:
 
         self._build_model()
         self._build_dataloaders()
+
+        # Resume metadata: peek at the checkpoint header so run() can skip
+        # already-finished phases and restart the current phase at the right
+        # epoch. Full state (model/optim/scheduler/scaler/ema) is restored later
+        # inside _run_phase, once those objects exist.
         self.resume_path = resume_path
+        self.resume_phase = 0
+        self.resume_epoch = 0
+        if resume_path:
+            header = torch.load(resume_path, map_location="cpu", weights_only=False)
+            self.resume_phase = int(header.get("phase", 0))
+            self.resume_epoch = int(header.get("epoch", 0))
+            log.info(
+                "Resume requested: %s → phase %d, %d epoch(s) completed",
+                resume_path, self.resume_phase, self.resume_epoch,
+            )
 
     # ------------------------------------------------------------------
     # Model construction
@@ -289,10 +321,21 @@ class Trainer:
             T_max=phase_cfg["epochs"],
             eta_min=self.cfg["scheduler"]["eta_min"],
         )
-        scaler = GradScaler(enabled=self.cfg["amp"]["enabled"])
+        amp_enabled = self.cfg["amp"]["enabled"]
+        amp_dtype_str = self.cfg["amp"].get("dtype", "float16")
+        amp_dtype = torch.bfloat16 if amp_dtype_str == "bfloat16" else torch.float16
+        # GradScaler is only meaningful for float16 (which can overflow to Inf).
+        # bfloat16 has float32's exponent range — no overflow, no scaling needed.
+        use_scaler = amp_enabled and amp_dtype == torch.float16
+        scaler = GradScaler(self.device.type, enabled=use_scaler)
         ema = EMA(self.model, decay=phase_cfg["ema_decay"])
 
-        if self.resume_path and phase_id == 1 and start_epoch > 0:
+        # Restore full training state only when resuming INTO the same phase we
+        # checkpointed in (mid-phase continue). For a cross-phase resume
+        # (e.g. phase1_final → phase 2) the model weights already persist in
+        # self.model from the prior _run_phase call, and we deliberately start
+        # the new phase with a FRESH optimizer + scheduler at its own LR.
+        if self.resume_path and self.resume_phase == phase_id:
             load_checkpoint(
                 self.resume_path,
                 self.model,
@@ -307,6 +350,7 @@ class Trainer:
         log_every = self.cfg["logging"]["log_every_n_steps"]
         val_every = self.cfg["logging"]["val_every_n_epochs"]
         save_every = self.cfg["checkpointing"]["save_every_n_epochs"]
+        keep_last_n = self.cfg["checkpointing"].get("keep_last_n", 5)
 
         try:
             from torch.utils.tensorboard import SummaryWriter
@@ -330,7 +374,7 @@ class Trainer:
                 clear = batch["clear"].to(self.device, non_blocking=True)
                 mask = batch["mask"].to(self.device, non_blocking=True)
 
-                with autocast(enabled=self.cfg["amp"]["enabled"]):
+                with autocast(self.device.type, enabled=amp_enabled, dtype=amp_dtype):
                     if self.res_head is not None:
                         # Residual-head path: feed the *decoder feature map*
                         # (dim channels), NOT the 3-channel reconstruction, to
@@ -343,15 +387,29 @@ class Trainer:
                         pred = self.res_head(feats, cloudy_input=cloudy, cloud_mask=mask)
                     else:
                         pred = self.model(cloudy)
-                    losses = criterion(pred, clear, discriminator)
+                    losses = criterion(pred, clear, discriminator, cloudy)
 
                 optimizer.zero_grad()
                 scaler.scale(losses["total"]).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(params, phase_cfg["grad_clip"])
-                scaler.step(optimizer)
-                scaler.update()
-                ema.update(self.model)
+                # clip_grad_norm_ returns the total norm BEFORE clipping; if any
+                # gradient is NaN/Inf the returned norm is non-finite. Under AMP
+                # GradScaler skips such steps automatically, but smoke/CPU runs
+                # have AMP off — so guard explicitly. A single bad batch must not
+                # corrupt the weights and turn every subsequent forward to NaN.
+                grad_norm = torch.nn.utils.clip_grad_norm_(params, phase_cfg["grad_clip"])
+                if torch.isfinite(grad_norm):
+                    scaler.step(optimizer)
+                    scaler.update()
+                    ema.update(self.model)
+                else:
+                    scaler.update()  # keep AMP scale state consistent
+                    optimizer.zero_grad(set_to_none=True)
+                    log.warning(
+                        "Phase %d | Epoch %d | Step %d | non-finite gradient — step skipped",
+                        phase_id, epoch + 1, step,
+                    )
+                    continue
 
                 # Discriminator update
                 if use_adv and discriminator is not None and disc_optim is not None:
@@ -385,7 +443,7 @@ class Trainer:
                                 tb_writer.add_scalar(f"train/loss_{k}", v.item(), global_step)
 
             scheduler.step()
-            mean_loss = sum(epoch_losses) / len(epoch_losses)
+            mean_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
             current_lr = optimizer.param_groups[0]["lr"]
             log.info(
                 "Phase %d | Epoch %d | Mean Loss %.4f | LR %.2e",
@@ -410,7 +468,23 @@ class Trainer:
                     for k, v in val_metrics.items():
                         tb_writer.add_scalar(f"val/{k}", v, epoch)
 
-            # Checkpoint
+            # Crash-safe resume: overwrite a single rolling checkpoint EVERY
+            # epoch. Stopping the run (Ctrl+C, reboot, power loss) costs at most
+            # one epoch; resume with --resume <ckpt_dir>/last.pt.
+            save_checkpoint(
+                ckpt_dir / "last.pt",
+                epoch=epoch + 1,
+                phase=phase_id,
+                model=self.model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                ema=ema,
+                metrics={},
+            )
+
+            # Milestone checkpoints at the configured interval, pruned to the
+            # last keep_last_n so disk stays bounded over a long run.
             if (epoch + 1) % save_every == 0:
                 save_checkpoint(
                     ckpt_dir / f"phase{phase_id}_epoch{epoch + 1:04d}.pt",
@@ -423,6 +497,7 @@ class Trainer:
                     ema=ema,
                     metrics={},
                 )
+                _prune_checkpoints(ckpt_dir, phase_id, keep_last_n)
 
         # Save final checkpoint for this phase
         save_checkpoint(
@@ -469,25 +544,39 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        self._run_phase(1, self.cfg["phase1"])
+        rp = self.resume_phase  # 0 when not resuming
+
+        # Phase 1 — skipped outright if the checkpoint is already past it.
+        if rp <= 1:
+            self._run_phase(1, self.cfg["phase1"],
+                            start_epoch=self.resume_epoch if rp == 1 else 0)
 
         if self.smoke:
             log.info("SMOKE MODE complete — Phase 1 ran end-to-end. Skipping Phases 2/3.")
             return
 
-        self._run_phase(2, self.cfg["phase2"])
+        # Phase 2
+        if rp <= 2:
+            self._run_phase(2, self.cfg["phase2"],
+                            start_epoch=self.resume_epoch if rp == 2 else 0)
 
         # Phase 3: fine-tune on real LISS-IV data
         p3 = self.cfg.get("phase3", {})
         if p3.get("liss4_root") and Path(p3["liss4_root"]).exists():
-            liss4_ds = LISS4Dataset(
-                root_dir=p3["liss4_root"],
-                split="train",
-                patch_size=self.cfg["data"]["patch_size"],
-                augment=True,
-                min_cloud_fraction=p3.get("min_cloud_fraction", 0.02),
-                max_cloud_fraction=p3.get("max_cloud_fraction", 0.95),
-            )
+            try:
+                liss4_ds = LISS4Dataset(
+                    root_dir=p3["liss4_root"],
+                    split="train",
+                    patch_size=self.cfg["data"]["patch_size"],
+                    augment=True,
+                    min_cloud_fraction=p3.get("min_cloud_fraction", 0.02),
+                    max_cloud_fraction=p3.get("max_cloud_fraction", 0.95),
+                )
+            except RuntimeError as e:
+                log.warning("Phase 3 skipped — LISS-IV dataset error: %s", e)
+                log.info("Download LISS-IV scenes from bhoonidhi.nrsc.gov.in and place "
+                         "prepared pairs in %s, then re-run to fine-tune.", p3["liss4_root"])
+                return
             self.train_loader = DataLoader(
                 liss4_ds,
                 batch_size=p3["batch_size"],
@@ -496,7 +585,7 @@ class Trainer:
                 pin_memory=True,
                 drop_last=True,
             )
-            self._run_phase(3, p3)
+            self._run_phase(3, p3, start_epoch=self.resume_epoch if rp == 3 else 0)
         else:
             log.info("Phase 3 skipped (no LISS-IV data found at %s)", p3.get("liss4_root"))
 

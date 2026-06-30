@@ -73,7 +73,7 @@ def load_cloud_detector(
 
     from ai.cloud_detector.model import CloudDetector
     _DETECTOR = CloudDetector(in_channels=3).to(_DEVICE)
-    state = torch.load(checkpoint_path, map_location=_DEVICE)
+    state = torch.load(checkpoint_path, map_location=_DEVICE, weights_only=False)
     _DETECTOR.load_state_dict(state)
     _DETECTOR.eval()
     log.info("CloudDetector loaded from %s", checkpoint_path)

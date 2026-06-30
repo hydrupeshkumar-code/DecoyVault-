@@ -79,6 +79,33 @@ Band selection: B3 (Green) · B4 (Red) · B8 (NIR)
 
 ---
 
+## Trained Model Status and Handoff
+
+The base Restormer model is already trained in this workspace.
+
+- Checkpoint path: ai/restormer/checkpoints/phase2_final.pt
+- Checkpoint size: 407,741,217 bytes
+- SHA256: 1B377C3D43D6F0943CEA5D1D07FF907DFF165CFEBBDE14E6EA224C4DD849AA74
+
+This checkpoint is intentionally not versioned in git (large binary). The next
+step is LISS-4 fine-tuning by the handoff teammate.
+
+Fine-tuning handoff command:
+
+```bash
+python scripts/check_phase3_ready.py
+```
+
+If the check passes, run:
+
+```bash
+```
+
+Phase 3 starts when prepared LISS-4 pairs exist at the configured
+phase3.liss4_root path (default: datasets/liss4).
+
+---
+
 ## Metrics
 
 | Metric | Description |
