@@ -618,6 +618,35 @@ def _apply_smoke_overrides(cfg: Dict[str, Any]) -> None:
     cfg.setdefault("checkpointing", {})["save_every_n_epochs"] = 1
 
 
+def _ensure_smoke_data(cfg: Dict[str, Any]) -> None:
+    """
+    Guarantee the smoke run has SOMETHING to train on.
+
+    The repo ships no bundled dataset, so on a fresh clone the configured
+    root_dir is absent and the loader raises before a single step runs. If no
+    usable flat dataset is found, synthesise a tiny one so `--smoke` proves the
+    loss descends end-to-end with zero download. A real dataset (once prepared)
+    is left untouched.
+    """
+    dcfg = cfg.setdefault("data", {})
+    root = Path(dcfg.get("root_dir", ""))
+    has_data = any((root / "cloudy").glob(ext) for ext in ("*.npy", "*.tif", "*.tiff")) \
+        if (root / "cloudy").exists() else False
+    if has_data:
+        return
+
+    from ai.dataset_tools.synthetic import make_synthetic_flat
+    synth_root = Path("datasets/_smoke_synth")
+    log.warning(
+        "No dataset found at %s — generating synthetic smoke data at %s "
+        "(sanity check only, not real training).", root, synth_root,
+    )
+    make_synthetic_flat(synth_root, n=24, size=dcfg.get("patch_size", 128))
+    dcfg["root_dir"] = str(synth_root)
+    dcfg["dataset_type"] = "sen12ms_cr"
+    dcfg["layout"] = "flat"
+
+
 def main() -> None:
     args = _parse_args()
     with open(args.config) as f:
@@ -626,6 +655,7 @@ def main() -> None:
     max_samples = args.max_samples
     if args.smoke:
         _apply_smoke_overrides(cfg)
+        _ensure_smoke_data(cfg)
         if max_samples is None:
             max_samples = 64
 

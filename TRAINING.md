@@ -91,6 +91,11 @@ python -m ai.restormer.train --smoke --config ai/restormer/train_config.yaml
 report a mean loss, validate, and write `phase1_final.pt`. If it NaNs or errors,
 fix the data before committing to a full run. (`--max-samples N` caps any run.)
 
+If no dataset is present yet (fresh clone, nothing downloaded), `--smoke`
+auto-generates a tiny synthetic set at `datasets/_smoke_synth/` so it still runs
+end-to-end and proves the loss descends — no download required. A real prepared
+dataset at the configured `root_dir` is always used in preference and left untouched.
+
 ## 5. Full training (GPU)
 
 ```bash
